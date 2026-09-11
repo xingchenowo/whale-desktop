@@ -1,0 +1,19 @@
+{
+  "name": "whale-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "description": "DeepSeek 余额小鲸鱼桌面挂件（Windows，独立于 DSH）",
+  "main": "src/main/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "start:detached": "start-pet.cmd",
+    "verify": "electron . --verify-shot verify.png --click --wait-ms 6000",
+    "verify:native": "electron . --verify-shot verify-native.png --natural --wait-ms 5000",
+    "build:portable": "node tools/build-portable.cjs",
+    "test": "node tools/test-lines.cjs",
+    "make-demo-skin": "node tools/make-demo-skin.cjs"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}
