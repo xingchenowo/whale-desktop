@@ -34,15 +34,15 @@
 
 ## 快速开始
 
-### 直接使用 Windows 便携版
+### 直接使用 Windows 版
 
 ```text
-WhaleDesktop-Windows-x64-portable.zip
-  └─ 解压后双击「启动小鲸鱼.cmd」（或 start-whale.cmd）
+WhaleDesktop-Portable-0.2.0-x64.exe   # 单文件便携版，双击直接运行
+WhaleDesktop-Setup-0.2.0-x64.exe      # NSIS 安装程序，创建快捷方式
 ```
 
-便携版已经包含 Electron 运行时，目标电脑不需要安装 Node.js、npm 或 DSH。
-用户数据仍写在 `%APPDATA%\dsh-whale-desktop\`，升级程序不会覆盖配置和皮肤。
+两种产物都已经包含 Electron 运行时，目标电脑不需要安装 Node.js、npm 或 DSH。
+用户数据仍写在 `%APPDATA%\dsh-whale-desktop\`，升级或卸载程序不会自动删除配置和皮肤。
 
 ### 从源码运行
 
@@ -68,14 +68,38 @@ npm start
 > npm install
 > ```
 
-### 构建便携版
+### 构建 Windows 便携 exe 和安装程序
+
+```powershell
+# 单文件便携版 exe
+npm run build:portable-exe
+
+# NSIS 安装程序
+npm run build:installer
+
+# 一次构建两个
+npm run build:windows
+```
+
+构建结果：
+
+```text
+dist-installer\portable\WhaleDesktop-Portable-0.2.0-x64.exe
+dist-installer\nsis\WhaleDesktop-Setup-0.2.0-x64.exe
+```
+
+安装程序是**当前用户安装**，不需要管理员权限，可以选择安装目录，并创建桌面和开始菜单快捷方式。
+卸载时默认**不会删除** `%APPDATA%\dsh-whale-desktop\`，你的配置、账本和皮肤会保留。
+
+> 当前构建没有代码签名证书，Windows SmartScreen 可能显示“未知发布者”。选择“仍要运行”即可；正式发布建议购买代码签名证书后重新打包。
+
+旧的文件夹便携版仍可通过下面的命令生成：
 
 ```powershell
 npm run build:portable
 ```
 
-构建结果在 `dist\whale-desktop-win\`，同时会生成 `dist\WhaleDesktop-Windows-x64-portable.zip`。
-打包脚本直接复用 `node_modules\electron\dist`，不会额外下载 electron-builder 或 NSIS。
+结果在 `dist\whale-desktop-win\`。
 
 ### 没有余额显示？
 
@@ -468,6 +492,8 @@ $env:WHALE_DEBUG=1; npm start   # 日志同时打到控制台
 ## 致谢
 
 感谢 MeteorNOX 创作并开源 DeepSeek-Balance-Whale-Widget，以及上游项目提供的小鲸鱼素材、余额挂件交互和 DSH 插件实现。
+
+
 
 
 
