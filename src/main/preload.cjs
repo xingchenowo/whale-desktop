@@ -24,6 +24,13 @@ contextBridge.exposeInMainWorld('whale', {
     return () => ipcRenderer.removeListener('whale:balance', handler)
   },
 
+  // --- display modes ---
+  onKey: (cb) => {
+    const handler = (_e, payload) => cb(payload)
+    ipcRenderer.on('whale:key', handler)
+    return () => ipcRenderer.removeListener('whale:key', handler)
+  },
+
   // --- dialogue ---
   pickLines: () => ipcRenderer.invoke('whale:pick-lines'),
 

@@ -11,9 +11,57 @@
     "verify:native": "electron . --verify-shot verify-native.png --natural --wait-ms 5000",
     "build:portable": "node tools/build-portable.cjs",
     "test": "node tools/test-lines.cjs",
-    "make-demo-skin": "node tools/make-demo-skin.cjs"
+    "make-demo-skin": "node tools/make-demo-skin.cjs",
+    "build:portable-exe": "electron-builder --win portable --x64 --config.directories.output=dist-installer/portable --config.win.artifactName=WhaleDesktop-Portable-${version}-x64.${ext}",
+    "build:installer": "electron-builder --win nsis --x64 --config.directories.output=dist-installer/nsis --config.win.artifactName=WhaleDesktop-Setup-${version}-x64.${ext}",
+    "build:windows": "npm run build:portable-exe && npm run build:installer"
   },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "author": "MeteorNOX (original project); whale-desktop contributors",
+  "license": "MIT",
+  "build": {
+    "appId": "com.meteornox.whale.desktop",
+    "productName": "WhaleDesktop",
+    "copyright": "Copyright (c) 2026 MeteorNOX",
+    "asar": true,
+    "directories": {
+      "output": "dist-installer",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json",
+      "LICENSE",
+      "README.md"
+    ],
+    "win": {
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "小鲸鱼余额挂件",
+      "uninstallDisplayName": "小鲸鱼余额挂件",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ]
+    },
+    "asarUnpack": [
+      "node_modules/uiohook-napi/**/*"
+    ]
+  },
+  "dependencies": {
+    "uiohook-napi": "^1.5.5"
   }
 }

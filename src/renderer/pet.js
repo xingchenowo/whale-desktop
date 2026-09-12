@@ -14,6 +14,8 @@
 const MIN_SCALE = 0.6
 const MAX_SCALE = 2.5
 const REFRESH_MS_FLOOR = 10000
+const KEY_BUBBLE_MS = 1500
+const LOCK_HIDE_DELAY_MS = 700
 
 const STYLE_CLASS = { A: 'label', B: 'amount', C: 'hint', P: 'period' }
 
@@ -34,7 +36,12 @@ const state = {
   message: '',
   soundSet: 'duck',
   usageMode: 'ledger',
-  peakMode: 'default',
+  peakPreset: 'default',
+  peakPresets: [],
+  peaksFile: '',
+  peaksError: null,
+  displayMode: 'balance',
+  keyboardClickMode: 'balance',
   soundOn: true,
   volume: 0.9,
   bubbleOn: true,
@@ -42,6 +49,8 @@ const state = {
   bubbleMs: 5000,
   showMenuButton: true,
   draggable: true,
+  locked: false,
+  lockVisible: false,
 }
 
 let root = null
@@ -53,6 +62,7 @@ let gifEl = null
 let textBox = null
 let lineEls = []
 let menuBtn = null
+let lockBtn = null
 let menuBox = null
 let gifFailed = false
 
@@ -71,6 +81,7 @@ let hitCtx = null
 let hitImage = null
 let hitReady = false
 let passthroughActive = false
+let lockHideTimer = null
 let baseSize = 320
 let pressClient = null
 let pressScreen = null
@@ -109,8 +120,9 @@ function placeholders() {
 }
 
 function periodText(peak) {
-  if (state.peakMode === 'liangwen') return peak ? '梁文峰' : '梁文谷'
-  if (state.peakMode === 'qiangqiang') return peak ? '!?峰峰?!' : '!?谷谷?!'
+  const presets = Array.isArray(state.peakPresets) ? state.peakPresets : []
+  const preset = presets.find((p) => p.id === state.peakPreset) || presets[0] || null
+  if (preset) return peak ? preset.peak : preset.offPeak
   return peak ? '高峰时段' : '空闲时段'
 }
 
@@ -178,6 +190,11 @@ function computeLayout() {
   const btnRight = (btnCfg.right === undefined ? 4 : Number(btnCfg.right)) * uiScale
   const btnTop = (btnCfg.topRatio === undefined ? 0.4055 : Number(btnCfg.topRatio)) * contentH + 4 * uiScale
 
+  const lockCfg = g.lockBtn || {}
+  const lockSize = (Number(lockCfg.size) || 28) * uiScale
+  const lockLeft = pad + imageLeft + (Number(lockCfg.offsetX) || 0) * uiScale
+  const lockTop = pad + imageTop + (Number(lockCfg.offsetY) || 0) * uiScale
+
   return {
     pad, bubbleW, bubbleH, bubbleLeft, bubbleTop,
     fontW, imageLeft, imageTop, imageW, imageH,
@@ -189,6 +206,12 @@ function computeLayout() {
       top: pad + btnTop,
       width: btnSize,
       height: btnSize,
+    },
+    lockButton: {
+      left: lockLeft,
+      top: lockTop,
+      width: lockSize,
+      height: lockSize,
     },
   }
 }
@@ -258,6 +281,12 @@ function applyLayout() {
   menuBtn.style.width = L.button.width + 'px'
   menuBtn.style.height = L.button.height + 'px'
 
+  lockBtn.style.left = L.lockButton.left + 'px'
+  lockBtn.style.top = L.lockButton.top + 'px'
+  lockBtn.style.width = L.lockButton.width + 'px'
+  lockBtn.style.height = L.lockButton.height + 'px'
+  lockBtn.style.fontSize = Math.round(L.lockButton.width * 0.56) + 'px'
+
   window.whale.resize({ width: L.windowW, height: L.windowH })
   return L
 }
@@ -305,6 +334,12 @@ function rectHit(x, y, r) {
   return !!r && x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height
 }
 
+function isLockHit(clientX, clientY, layout) {
+  const L = layout || computeLayout()
+  if (!lockBtn || (!state.locked && !state.lockVisible)) return false
+  return rectHit(clientX, clientY, L.lockButton)
+}
+
 /**
  * Is the pointer over the balloon itself, rather than the empty rectangle around
  * it? The balloon is an ellipse inside a rectangular box, so a plain box test
@@ -316,6 +351,7 @@ function rectHit(x, y, r) {
  * painted paths) when the pointer really is on the balloon.
  */
 function isBubbleHit(clientX, clientY) {
+  if (state.locked) return false
   const L = computeLayout()
   if (!rectHit(clientX, clientY, {
     left: L.pad + L.bubbleLeft, top: L.pad + L.bubbleTop,
@@ -332,6 +368,8 @@ function isBubbleHit(clientX, clientY) {
 
 function isBodyHit(clientX, clientY) {
   const L = computeLayout()
+  if (isLockHit(clientX, clientY, L)) return true
+  if (state.locked) return false
   if (menuBtn && state.showMenuButton && rectHit(clientX, clientY, L.button)) return true
   const px = clientX - (L.pad + L.imageLeft)
   const py = clientY - (L.pad + L.imageTop)
@@ -349,6 +387,8 @@ function isBodyHit(clientX, clientY) {
 
 function isZoneHit(clientX, clientY) {
   const L = computeLayout()
+  if (isLockHit(clientX, clientY, L)) return true
+  if (state.locked) return false
   if (isBodyHit(clientX, clientY)) return true
   if (state.showMenuButton && menuBtn && rectHit(clientX, clientY, {
     left: L.button.left - ZONE_PAD, top: L.button.top - ZONE_PAD,
@@ -371,7 +411,7 @@ function isZoneHit(clientX, clientY) {
 }
 
 function updatePassthrough(clientX, clientY) {
-  if (state.config && state.config.passthrough === false) {
+  if (!state.locked && state.config && state.config.passthrough === false) {
     if (passthroughActive) { window.whale.setPassthrough(false); passthroughActive = false }
     return
   }
@@ -452,6 +492,58 @@ function balanceLines() {
   ]
 }
 
+function timeLines() {
+  const now = new Date()
+  const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()]
+  const p = (n) => String(n).padStart(2, '0')
+  const date = now.getFullYear() + '-' + p(now.getMonth() + 1) + '-' + p(now.getDate()) + ' ' + week
+  return [
+    { t: '当前时间', s: 'A', c: '' },
+    { t: p(now.getHours()) + ':' + p(now.getMinutes()) + ':' + p(now.getSeconds()), s: 'B', c: '' },
+    { t: date, s: 'C', c: '' },
+  ]
+}
+
+function keyboardLines(label, error) {
+  if (error) {
+    return [
+      { t: '键盘监听不可用', s: 'A', c: '#e0433f' },
+      { t: String(error).slice(0, 80), s: 'C', c: '#e0433f', w: true },
+      null,
+    ]
+  }
+  if (!label) {
+    return [
+      { t: '键盘监听', s: 'A', c: '' },
+      { t: '按任意键', s: 'B', c: '' },
+      null,
+    ]
+  }
+  return [
+    { t: '按键', s: 'A', c: '' },
+    { t: label, s: 'B', c: '' },
+    null,
+  ]
+}
+
+function displayLines() {
+  if (state.displayMode === 'time') return timeLines()
+  if (state.displayMode === 'keyboard') {
+    return state.keyboardClickMode === 'time' ? timeLines() : balanceLines()
+  }
+  return balanceLines()
+}
+
+function isBalanceDisplay() {
+  return state.displayMode === 'balance' ||
+    (state.displayMode === 'keyboard' && state.keyboardClickMode !== 'time')
+}
+
+function isTimeDisplay() {
+  return state.displayMode === 'time' ||
+    (state.displayMode === 'keyboard' && state.keyboardClickMode === 'time')
+}
+
 function resolveLines(sel) {
   if (!sel) return builtinLines('period')
   if (sel.gif) return { gif: true }
@@ -469,13 +561,13 @@ function openBubble() {
   bubbleShown = true
   bubbleRandomActive = false
   bubbleRandomLines = null
-  applyLines(balanceLines())
+  applyLines(displayLines())
   bubbleEl.classList.add('open')
   if (bubbleTimer) clearTimeout(bubbleTimer)
   bubbleTimer = setTimeout(closeBubble, Math.max(600, Number(state.bubbleMs) || 5000))
   // Refresh in the background; the main process caches for 25 seconds, so this
   // is cheap when the user opens the bubble several times in a row.
-  refresh(false)
+  if (isBalanceDisplay()) refresh(false)
 }
 
 function closeBubble() {
@@ -498,6 +590,18 @@ async function onBubbleClick(e) {
   applyLines(resolveLines(sel))
   if (bubbleTimer) clearTimeout(bubbleTimer)
   bubbleTimer = setTimeout(closeBubble, Math.max(600, Number(state.bubbleMs) || 5000))
+}
+
+function showKeyboardKey(payload) {
+  if (!payload || state.displayMode !== 'keyboard') return
+  state.keyboardError = payload.error || null
+  bubbleShown = true
+  bubbleRandomActive = false
+  bubbleRandomLines = null
+  applyLines(keyboardLines(payload.label, payload.error))
+  bubbleEl.classList.add('open')
+  if (bubbleTimer) clearTimeout(bubbleTimer)
+  bubbleTimer = setTimeout(closeBubble, KEY_BUBBLE_MS)
 }
 
 // --- balance rendering ------------------------------------------------------
@@ -529,7 +633,7 @@ function renderBalance(payload) {
     state.todayUsage = null
     state.status = 'error'
     state.message = payload.hint || payload.error || '读取失败'
-    if (bubbleShown && !bubbleRandomActive) applyLines(balanceLines())
+    if (bubbleShown && !bubbleRandomActive && isBalanceDisplay()) applyLines(balanceLines())
     return
   }
   const cur = payload.currency || 'CNY'
@@ -541,7 +645,7 @@ function renderBalance(payload) {
   state.message = payload.usageWarning || payload.warning || ''
 
   const changed = shownAmount !== null && state.balance !== shownAmount
-  if (bubbleShown && !bubbleRandomActive) {
+  if (bubbleShown && !bubbleRandomActive && isBalanceDisplay()) {
     applyLines(balanceLines())
     if (changed) animateAmount(shownAmount, state.balance, cur, 700)
   }
@@ -583,6 +687,47 @@ function setPressed(on) {
   petBox.classList.toggle('pressed', on)
 }
 
+function updateLockButton() {
+  if (!lockBtn) return
+  lockBtn.textContent = state.locked ? '🔒' : '🔓'
+  lockBtn.classList.toggle('locked', state.locked)
+  lockBtn.classList.toggle('visible', state.locked || state.lockVisible)
+  lockBtn.title = state.locked ? '解除锁定' : '锁定桌宠（鼠标穿透）'
+}
+
+function showLockTemporarily() {
+  if (lockHideTimer) { clearTimeout(lockHideTimer); lockHideTimer = null }
+  if (!state.lockVisible) {
+    state.lockVisible = true
+    updateLockButton()
+  }
+}
+
+function scheduleLockHide() {
+  if (state.locked || !state.lockVisible || lockHideTimer) return
+  lockHideTimer = setTimeout(() => {
+    lockHideTimer = null
+    if (state.locked) return
+    state.lockVisible = false
+    updateLockButton()
+  }, LOCK_HIDE_DELAY_MS)
+}
+
+function toggleLock() {
+  state.locked = !state.locked
+  state.lockVisible = state.locked
+  if (lockHideTimer) { clearTimeout(lockHideTimer); lockHideTimer = null }
+  if (state.locked) {
+    closeMenu()
+    closeBubble()
+    setPressed(false)
+    window.whale.dragEnd()
+  }
+  updateLockButton()
+  const L = computeLayout()
+  updateHover(L.lockButton.left + L.lockButton.width / 2, L.lockButton.top + L.lockButton.height / 2)
+}
+
 function setupInteraction() {
   document.addEventListener('pointerdown', onPointerDown)
   window.addEventListener('pointerup', onPointerUp)
@@ -592,6 +737,11 @@ function setupInteraction() {
     e.preventDefault()
     e.stopPropagation()
     toggleMenu()
+  })
+  lockBtn.addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    toggleLock()
   })
   window.addEventListener('blur', () => {
     setPressed(false)
@@ -606,12 +756,14 @@ function setupInteraction() {
   document.addEventListener('mouseleave', () => {
     updatePassthrough(-1, -1)
     setPressed(false)
+    scheduleLockHide()
     if (!menuOpen) menuBtn.classList.remove('visible')
     root.style.cursor = 'default'
   })
   document.addEventListener('click', onDocumentClick)
   document.addEventListener('contextmenu', (e) => {
     e.preventDefault()
+    if (isLockHit(e.clientX, e.clientY)) return
     if (isBodyHit(e.clientX, e.clientY) || rectHit(e.clientX, e.clientY, buttonRect())) toggleMenu()
   })
   window.addEventListener('resize', () => { applyLayout(); rebuildHitMask() })
@@ -658,7 +810,7 @@ function buttonRect() {
 /** Click target that belongs to a real control (menu / bubble / button). */
 function isInteractiveTarget(target) {
   return !!(target && target.closest && target.closest(
-    '.menu, .menu-btn, .bubble, .select, .range, .number, .check, .btn'
+    '.menu, .menu-btn, .lock-btn, .bubble, .select, .range, .number, .check, .btn'
   ))
 }
 
@@ -721,16 +873,19 @@ function onDocumentClick(e) {
 function updateHover(clientX, clientY) {
   updatePassthrough(clientX, clientY)
   maybeBeginDrag(clientX, clientY)
-  const body = isBodyHit(clientX, clientY)
-  const overButton = state.showMenuButton && rectHit(clientX, clientY, buttonRect())
+  const overLock = isLockHit(clientX, clientY)
+  const body = !state.locked && isBodyHit(clientX, clientY)
+  const overButton = !state.locked && state.showMenuButton && rectHit(clientX, clientY, buttonRect())
   if (!pressed) {
-    const overBubble = bubbleShown && isBubbleHit(clientX, clientY)
-    root.style.cursor = overBubble
+    const overBubble = !state.locked && bubbleShown && isBubbleHit(clientX, clientY)
+    if (state.locked || body || overButton || overLock || menuOpen) showLockTemporarily()
+    else scheduleLockHide()
+    root.style.cursor = overLock
       ? 'pointer'
-      : ((body || overButton) ? (state.draggable ? 'grab' : 'pointer') : 'default')
+      : (overBubble ? 'pointer' : ((body || overButton) ? (state.draggable ? 'grab' : 'pointer') : 'default'))
     // The hamburger appears while the pointer is over the pet, and stays up while
     // the menu is open so it can be clicked again to dismiss.
-    menuBtn.classList.toggle('visible', state.showMenuButton && (body || overButton || menuOpen))
+    menuBtn.classList.toggle('visible', !state.locked && state.showMenuButton && (body || overButton || menuOpen))
   }
 }
 
@@ -772,7 +927,9 @@ function buildMenu() {
 
   if (state.configError) menuBox.appendChild(warningRow('配置错误：' + state.configError))
   if (state.linesError) menuBox.appendChild(warningRow('台词错误：' + state.linesError))
+  if (state.peaksError) menuBox.appendChild(warningRow('峰谷文案错误：' + state.peaksError))
   if (state.hasApiKey === false) menuBox.appendChild(warningRow('未找到 API Key，余额暂时不可用'))
+  if (state.keyboardError) menuBox.appendChild(warningRow('键盘监听不可用：' + state.keyboardError))
 
   // skin
   const skinRow = menuRow()
@@ -802,6 +959,47 @@ function buildMenu() {
   })
   skinRow.appendChild(skinSelect)
   menuBox.appendChild(skinRow)
+
+  // display mode
+  const displayRow = menuRow()
+  displayRow.appendChild(menuLabel('显示'))
+  const displaySelect = document.createElement('select')
+  displaySelect.className = 'select'
+  for (const [v, label] of [['balance', 'DeepSeek 余额'], ['time', '时间'], ['keyboard', '键盘按键']]) {
+    const o = document.createElement('option')
+    o.value = v
+    o.textContent = label
+    displaySelect.appendChild(o)
+  }
+  displaySelect.value = state.displayMode
+  displaySelect.addEventListener('change', () => {
+    state.displayMode = displaySelect.value
+    saveConfig({ displayMode: state.displayMode })
+    if (bubbleShown && !bubbleRandomActive) applyLines(displayLines())
+    if (isBalanceDisplay()) refresh(false)
+  })
+  displayRow.appendChild(displaySelect)
+  menuBox.appendChild(displayRow)
+
+  const keyboardClickRow = menuRow()
+  keyboardClickRow.appendChild(menuLabel('按键点击'))
+  const keyboardClickSelect = document.createElement('select')
+  keyboardClickSelect.className = 'select'
+  for (const [v, label] of [['balance', 'DeepSeek 余额'], ['time', '时间']]) {
+    const o = document.createElement('option')
+    o.value = v
+    o.textContent = label
+    keyboardClickSelect.appendChild(o)
+  }
+  keyboardClickSelect.value = state.keyboardClickMode
+  keyboardClickSelect.addEventListener('change', () => {
+    state.keyboardClickMode = keyboardClickSelect.value
+    saveConfig({ keyboardClickMode: state.keyboardClickMode })
+    if (bubbleShown && !bubbleRandomActive) applyLines(displayLines())
+    if (isBalanceDisplay()) refresh(false)
+  })
+  keyboardClickRow.appendChild(keyboardClickSelect)
+  menuBox.appendChild(keyboardClickRow)
 
   // scale
   const scaleRow = menuRow()
@@ -914,17 +1112,17 @@ function buildMenu() {
   peakRow.appendChild(menuLabel('峰谷文案'))
   const peakSelect = document.createElement('select')
   peakSelect.className = 'select'
-  for (const [v, label] of [['default', '默认'], ['liangwen', '梁文峰谷'], ['qiangqiang', '!?强强?!']]) {
+  peakSelect.dataset.role = 'peak'
+  for (const preset of state.peakPresets) {
     const o = document.createElement('option')
-    o.value = v
-    o.textContent = label
+    o.value = preset.id
+    o.textContent = preset.name
     peakSelect.appendChild(o)
   }
-  peakSelect.value = state.peakMode
+  peakSelect.value = state.peakPreset
   peakSelect.addEventListener('change', () => {
-    state.peakMode = peakSelect.value
-    saveConfig({ peakMode: state.peakMode })
-    if (bubbleShown && !bubbleRandomActive) applyLines(balanceLines())
+    state.peakPreset = peakSelect.value
+    saveConfig({ peakPreset: state.peakPreset })
   })
   peakRow.appendChild(peakSelect)
   menuBox.appendChild(peakRow)
@@ -981,12 +1179,17 @@ function buildMenu() {
   const cfgBtn = button('配置文件', () => window.whale.openPath('config'))
   const linesBtn = button('台词文件', () => window.whale.openPath('lines'))
   const skinsBtn = button('皮肤文件夹', () => window.whale.openPath('skins'))
-  const currentSkinBtn = button('当前皮肤', () => window.whale.openPath('skin'))
   openRow.appendChild(cfgBtn)
   openRow.appendChild(linesBtn)
   openRow.appendChild(skinsBtn)
-  openRow.appendChild(currentSkinBtn)
   menuBox.appendChild(openRow)
+
+  const openRow2 = menuRow()
+  const currentSkinBtn = button('当前皮肤', () => window.whale.openPath('skin'))
+  const peaksBtn = button('峰谷文案', () => window.whale.openPath('peaks'))
+  openRow2.appendChild(currentSkinBtn)
+  openRow2.appendChild(peaksBtn)
+  menuBox.appendChild(openRow2)
 
   const reloadRow = menuRow()
   reloadRow.appendChild(button('重载配置', () => window.whale.reload().then(applyStatePayload)))
@@ -1028,19 +1231,37 @@ function openMenu() {
   // Skin folders can be added while the app is running. Refresh this one list
   // when the menu opens so the new pack appears without a restart.
   window.whale.getState().then((payload) => {
-    if (!menuOpen || !payload || !Array.isArray(payload.skins)) return
-    state.skins = payload.skins
-    const select = menuBox.querySelector('[data-role="skin"]')
-    if (!select) return
-    const current = select.value || (state.skin && state.skin.name) || 'default'
-    select.innerHTML = ''
-    for (const s of state.skins) {
-      const o = document.createElement('option')
-      o.value = s.name
-      o.textContent = s.displayName
-      select.appendChild(o)
+    if (!menuOpen || !payload) return
+    if (Array.isArray(payload.skins)) {
+      state.skins = payload.skins
+      const select = menuBox.querySelector('[data-role="skin"]')
+      if (select) {
+        const current = select.value || (state.skin && state.skin.name) || 'default'
+        select.innerHTML = ''
+        for (const s of state.skins) {
+          const o = document.createElement('option')
+          o.value = s.name
+          o.textContent = s.displayName
+          select.appendChild(o)
+        }
+        select.value = current
+      }
     }
-    select.value = current
+    if (Array.isArray(payload.peakPresets)) {
+      state.peakPresets = payload.peakPresets
+      const select = menuBox.querySelector('[data-role="peak"]')
+      if (select) {
+        const current = select.value || state.peakPreset
+        select.innerHTML = ''
+        for (const preset of state.peakPresets) {
+          const o = document.createElement('option')
+          o.value = preset.id
+          o.textContent = preset.name
+          select.appendChild(o)
+        }
+        select.value = current
+      }
+    }
   }).catch(() => {})
 }
 
@@ -1093,10 +1314,15 @@ function applyStatePayload(payload) {
   if (payload.groups !== undefined) state.groups = payload.groups || []
   if (payload.linesFile !== undefined) state.linesFile = payload.linesFile || ''
   if (payload.linesError !== undefined) state.linesError = payload.linesError || null
+  if (payload.peaksFile !== undefined) state.peaksFile = payload.peaksFile || ''
+  if (payload.peaksError !== undefined) state.peaksError = payload.peaksError || null
+  if (payload.peakPresets !== undefined) state.peakPresets = payload.peakPresets || []
   if (payload.hasApiKey !== undefined) state.hasApiKey = payload.hasApiKey
   if (payload.keySource !== undefined) state.keySource = payload.keySource
   if (payload.skin !== undefined) state.skin = payload.skin || null
   if (payload.isPeak !== undefined) state.isPeak = payload.isPeak
+  if (payload.keyboardError !== undefined) state.keyboardError = payload.keyboardError || null
+  if (payload.keyboardHookRunning !== undefined) state.keyboardHookRunning = !!payload.keyboardHookRunning
 
   const c = state.config
   state.scale = Number(c.scale) || 1.4
@@ -1104,7 +1330,9 @@ function applyStatePayload(payload) {
   state.volume = typeof c.volume === 'number' ? c.volume : 0.9
   state.soundSet = c.soundSet || 'duck'
   state.usageMode = c.usageMode === 'token' ? 'token' : 'ledger'
-  state.peakMode = c.peakMode || 'default'
+  state.peakPreset = c.peakPreset || 'default'
+  state.displayMode = ['balance', 'time', 'keyboard'].includes(c.displayMode) ? c.displayMode : 'balance'
+  state.keyboardClickMode = c.keyboardClickMode === 'time' ? 'time' : 'balance'
   state.bubbleOn = c.bubbleOn !== false
   state.randomLines = c.randomLines !== false
   state.bubbleMs = Number(c.bubbleMs) || 5000
@@ -1119,9 +1347,11 @@ function applyStatePayload(payload) {
   }
 
   menuBtn.style.display = state.showMenuButton ? '' : 'none'
+  updateLockButton()
   baseSize = 320 * state.scale
   applyLayout()
   rebuildHitMask()
+  if (bubbleShown && !bubbleRandomActive) applyLines(displayLines())
   if (menuOpen) { closeMenu(); buildMenuContents() }
 }
 
@@ -1209,30 +1439,46 @@ async function boot() {
   menuBtn.title = '菜单'
   menuBtn.innerHTML = '<span></span><span></span><span></span>'
 
+  lockBtn = document.createElement('button')
+  lockBtn.type = 'button'
+  lockBtn.className = 'lock-btn'
+  lockBtn.textContent = '🔓'
+  lockBtn.title = '锁定桌宠（鼠标穿透）'
+
   petBox.appendChild(imgEl)
   petBox.appendChild(bubbleEl)
   root.appendChild(petBox)
+  root.appendChild(lockBtn)
   root.appendChild(menuBtn)
   stage.appendChild(root)
 
   setupInteraction()
 
   applyStatePayload(payload)
+  updateLockButton()
   buildMenu()
-  await refresh(false)
+  if (isBalanceDisplay()) await refresh(false)
 
   window.whale.onState((p) => applyStatePayload(p))
   window.whale.onBalance((p) => renderBalance(p))
+  window.whale.onKey((p) => showKeyboardKey(p))
 
-  // Passive UI refresh so 今日已用 / 峰谷 stays current without a new fetch.
+  // Time mode updates every second; balance/period content only needs a slower
+  // passive refresh because the main process already polls the API.
   setInterval(() => {
-    if (bubbleShown && !bubbleRandomActive) applyLines(balanceLines())
+    if (bubbleShown && !bubbleRandomActive && isTimeDisplay()) applyLines(timeLines())
+  }, 1000)
+  setInterval(() => {
+    if (bubbleShown && !bubbleRandomActive && isBalanceDisplay()) applyLines(balanceLines())
   }, 30000)
 
   // Debug/automation hook for the headless screenshot mode and for tinkering in
   // DevTools. Not used by normal operation.
   window.__whaleDebug = {
     open: () => openBubble(),
+    lock: () => { if (!state.locked) toggleLock() },
+    unlock: () => { if (state.locked) toggleLock() },
+    isLocked: () => state.locked,
     close: () => closeBubble(),
     random: () => onBubbleClick({ stopPropagation() {} }),
     clickBubble: () => bubbleEl.click(),
@@ -1242,6 +1488,10 @@ async function boot() {
     /** Centre of the hamburger button in window client coordinates. */
     buttonCenter: () => {
       const r = buttonRect()
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }
+    },
+    lockCenter: () => {
+      const r = computeLayout().lockButton
       return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }
     },
     /** True when the given client point is over the visible balloon artwork. */
@@ -1341,6 +1591,7 @@ async function boot() {
         imageRect: { l: Math.round(ir.left), t: Math.round(ir.top), w: Math.round(ir.width), h: Math.round(ir.height) },
         textRect: { l: Math.round(tr.left), t: Math.round(tr.top), w: Math.round(tr.width), h: Math.round(tr.height) },
         buttonRect: L.button,
+        lockRect: L.lockButton,
         stageSize: { w: stage.style.width, h: stage.style.height },
       }
     },
@@ -1354,6 +1605,16 @@ async function boot() {
       hasApiKey: state.hasApiKey,
       keySource: state.keySource,
       usageMode: state.usageMode,
+      displayMode: state.displayMode,
+      keyboardClickMode: state.keyboardClickMode,
+      peakPreset: state.peakPreset,
+      peakPresets: state.peakPresets,
+      peaksError: state.peaksError,
+      locked: state.locked,
+      lockVisible: state.lockVisible,
+      keyboardError: state.keyboardError,
+      keyboardHookRunning: state.keyboardHookRunning,
+      passthroughActive,
       bubbleShown,
       randomActive: bubbleRandomActive,
       menuOpen,

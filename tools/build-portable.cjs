@@ -53,6 +53,13 @@ function copyApp() {
   for (const name of ['src', 'assets']) {
     fs.cpSync(path.join(ROOT, name), path.join(appDir, name), { recursive: true })
   }
+  const runtimeModules = ['uiohook-napi', 'node-gyp-build']
+  const appModules = path.join(appDir, 'node_modules')
+  fs.mkdirSync(appModules, { recursive: true })
+  for (const name of runtimeModules) {
+    const from = path.join(ROOT, 'node_modules', name)
+    if (fs.existsSync(from)) fs.cpSync(from, path.join(appModules, name), { recursive: true })
+  }
   const license = path.join(ROOT, 'LICENSE')
   if (fs.existsSync(license)) fs.copyFileSync(license, path.join(appDir, 'LICENSE'))
 

@@ -199,6 +199,43 @@ html, body {
 .menu-btn span { display: block; width: 14px; height: 2px; background: #fff; border-radius: 1px; }
 .menu-btn:hover { background: #203170; }
 
+/* --- lock button ---------------------------------------------------------- */
+
+.lock-btn {
+  position: absolute;
+  border: none;
+  border-radius: 50%;
+  background: rgba(32, 49, 112, .78);
+  color: #fff;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3;
+  opacity: 0;
+  transition: opacity .15s ease, background .15s ease, transform .15s ease;
+  -webkit-app-region: no-drag;
+}
+
+.lock-btn.visible {
+  opacity: .7;
+  pointer-events: auto;
+}
+
+.lock-btn.visible:hover {
+  opacity: 1;
+  transform: scale(1.08);
+}
+
+.lock-btn.locked {
+  opacity: 1;
+  pointer-events: auto;
+  background: rgba(196, 47, 47, .92);
+}
+
 /* --- menu ----------------------------------------------------------------- */
 
 .menu {

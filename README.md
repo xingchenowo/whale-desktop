@@ -122,6 +122,7 @@ npm run build:portable
 %APPDATA%\dsh-whale-desktop\
 ├── config.jsonc        主配置
 ├── lines.jsonc         随机台词 + 权重
+├── peaks.jsonc         具名峰谷文案列表
 ├── skins\
 │   └── default\        默认皮肤包
 │       ├── skin.jsonc  皮肤定义（几何参数、音效表）
@@ -237,7 +238,7 @@ npm run build:portable
 | `{today}` | 今日已用 |
 | `{balance}` | 当前余额 |
 | `{currency}` | 币种 |
-| `{period}` | 当前时段（受 `peakMode` 影响） |
+| `{period}` | 当前时段（受 `peakPreset` 影响） |
 
 例：`{ "t": "还剩 {balance} 呢", "s": "A" }`
 
@@ -329,16 +330,78 @@ Copy-Item -Recurse default my-whale
 | `randomLines` | `true` | 点击气泡切随机台词 |
 | `bubbleOn` | `true` | 是否允许显示气泡 |
 | `bubbleMs` | `5000` | 气泡自动收起毫秒数 |
+| `displayMode` | `"balance"` | 默认显示：`balance` 余额 / `time` 时间 / `keyboard` 键盘按键 |
+| `keyboardClickMode` | `"balance"` | 键盘模式下点击桌宠显示：`balance` 余额 / `time` 时间 |
 | `usageMode` | `"ledger"` | `ledger` 记账 / `token` 平台令牌实时 |
 | `apiKey` | `""` | 留空则读环境变量或 DSH 凭据 |
 | `platformToken` | `""` | 仅 `token` 模式需要 |
 
 | `refreshMs` | `60000` | 余额刷新间隔（最小 10000） |
-| `peakMode` | `"default"` | 时段文案：`default` / `liangwen` / `qiangqiang` |
+| `peakPreset` | `"default"` | 独立 `peaks.jsonc` 中选中的峰谷文案项 id |
 | `sound` / `volume` / `soundSet` | `true` / `0.9` / `"duck"` | 音效 |
 | `draggable` | `true` | 允许拖动 |
 | `passthrough` | `true` | 非挂件区域点击穿透 |
 | `showMenuButton` | `true` | 悬停显示汉堡按钮 |
+
+### 显示模式和自定义峰谷文案
+
+`displayMode` 控制桌宠默认显示什么：
+
+```jsonc
+{
+  // DeepSeek 余额
+  "displayMode": "balance",
+
+  // 时间
+  // "displayMode": "time",
+
+  // 键盘按键
+  // "displayMode": "keyboard"
+}
+```
+
+`time` 模式会显示当前时间，并在气泡打开时每秒刷新。
+
+`keyboard` 模式会启动一个**只监听、不消费按键**的全局键盘钩子。按下键盘后，气泡会自动弹出并显示按键名称；同时按住多个键时按顺序显示 `第一个 + 第二个 + 第三个`，最多显示三个；按键气泡显示 1.5 秒后自动收起。游戏和其他程序仍会正常收到按键。该模式不记录按键历史，不写入日志，也不会上传任何按键内容。
+
+键盘模式下点击桌宠气泡时，会显示 `keyboardClickMode` 指定的内容：
+
+```jsonc
+{
+  "displayMode": "keyboard",
+  "keyboardClickMode": "balance" // 或 "time"
+}
+```
+
+按住 Shift 使用数字键时，会显示键盘符号而不是 `Shift + 数字`，例如：
+
+```text
+Shift+1 -> !
+Shift+2 -> @
+Shift+3 -> #
+Shift+4 -> $
+Shift+5 -> %
+Shift+6 -> ^
+Shift+7 -> &
+Shift+8 -> *
+Shift+9 -> (
+Shift+0 -> )
+```
+
+自定义峰谷文案使用独立文件 `%APPDATA%\dsh-whale-desktop\peaks.jsonc`。
+每个 `presets` 项都会在菜单的「峰谷文案」下拉框里显示为一项，`name` 是菜单名：
+
+```jsonc
+{
+  "presets": [
+    { "id": "default", "name": "默认", "peak": "高峰时段", "offPeak": "空闲时段" },
+    { "id": "work", "name": "工作时段", "peak": "忙时", "offPeak": "闲时" },
+    { "name": "我的第三套", "peak": "峰", "offPeak": "谷" }
+  ]
+}
+```
+
+`id` 可以省略，程序会自动生成。文件里设置几项，菜单里就显示几项；当前选中的 id 保存在 `config.jsonc` 的 `peakPreset` 中。
 
 ### 用量模式
 
@@ -357,11 +420,14 @@ Copy-Item -Recurse default my-whale
 
 | 操作 | 效果 |
 | --- | --- |
-| 左键点鲸鱼 | 打开余额气泡 / 关闭 |
+| 左键点鲸鱼 | 打开当前显示模式的气泡 / 关闭 |
 | 点气泡 | 切到随机台词（再点关闭） |
 | 按住鲸鱼拖动 | 移动；松手吸附到最近的边并记忆位置 |
 | 悬停鲸鱼右上 | 出现汉堡菜单按钮 |
 | 右键鲸鱼 | 打开菜单 |
+| 鼠标悬停桌宠 | 左上角显示锁图标；鼠标离开后保留约 0.7 秒再隐藏，方便移动到图标上 |
+| 点击左上角锁图标 | 锁定 / 解除锁定；锁定时锁图标常驻，桌宠其余区域全部鼠标穿透 |
+| 键盘模式按下按键 | 自动弹出气泡并显示按键，按键不会被拦截 |
 | 托盘左键 | 显示/隐藏 |
 | 托盘右键 | 皮肤 / 刷新 / 打开配置 / 开机自启 / 退出 |
 
@@ -393,10 +459,12 @@ whale-desktop/
     │   ├── preload.cjs     # 渲染端唯一桥梁（无 Node 暴露）
     │   ├── config.cjs      # 主配置默认值与加载
     │   ├── lines.cjs       # 台词加权抽取
+    │   ├── peaks.cjs       # 独立峰谷文案列表
     │   ├── skins.cjs       # 皮肤包扫描与几何
     │   ├── balance.cjs     # 余额 / 平台用量 / 峰谷定价
     │   ├── ledger.cjs      # 小鲸鱼记账账本
     │   ├── credentials.cjs # key 解析（config → env → DSH 凭据）
+    │   ├── keyboard.cjs    # 全局非拦截键盘监听（仅 keyboard 模式启动）
     │   ├── paths.cjs       # 数据目录与日志
     │   └── lib/jsonc.cjs   # JSONC 解析 / 原子写
     └── renderer/
@@ -435,6 +503,9 @@ npm test
   并按锚定边保持贴合，所以缩放时是「原地长大」而不是漂移。
 - **鼠标穿透**：渲染端用 canvas 读立绘 alpha，判断指针是否真的在鲸鱼身上，
   不在就 `setIgnoreMouseEvents(true, {forward:true})`——所以透明区域不会挡住下层窗口。
+- **锁定模式**：锁图标始终保留命中区域；锁定后鲸鱼本体、气泡和菜单全部穿透，只有锁图标可点击解除。
+- **键盘监听**：仅在 `displayMode="keyboard"` 时启动 `uiohook-napi`。它是观察型系统钩子，
+  不消费按键、不阻止游戏输入，也不持久化按键历史。
 - **拖拽**：主进程轮询 `screen.getCursorScreenPoint()` 跟随光标，
   而不是用 `-webkit-app-region: drag`（那会吞掉悬停事件，菜单按钮就再也高亮不了）。
 - **资源访问**：渲染端通过自定义 `whale-asset://` 协议读取素材，且只允许
@@ -492,6 +563,18 @@ $env:WHALE_DEBUG=1; npm start   # 日志同时打到控制台
 ## 致谢
 
 感谢 MeteorNOX 创作并开源 DeepSeek-Balance-Whale-Widget，以及上游项目提供的小鲸鱼素材、余额挂件交互和 DSH 插件实现。
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

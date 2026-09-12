@@ -33,6 +33,12 @@ const DEFAULTS = {
   bubbleOn: true,
   // How long the bubble stays open, in milliseconds.
   bubbleMs: 5000,
+  // What the speech bubble shows by default:
+  // 'balance' | 'time' | 'keyboard'
+  displayMode: 'balance',
+  // In keyboard mode, clicking the pet shows this content.
+  // 'balance' | 'time'
+  keyboardClickMode: 'balance',
 
   // --- 用量 / 余额 ----------------------------------------------------------
   // 'ledger' = 小鲸鱼记账 (balance-difference bookkeeping, no token needed)
@@ -49,8 +55,8 @@ const DEFAULTS = {
   currency: '',
 
   // --- 区域文案 -------------------------------------------------------------
-  // 'default' | 'liangwen' (梁文峰/谷) | 'qiangqiang' (!?峰峰?!)
-  peakMode: 'default',
+  // Selected preset id from the independent peaks.jsonc file.
+  peakPreset: 'default',
 
   // --- 声音 -----------------------------------------------------------------
   sound: true,
@@ -72,7 +78,11 @@ function loadConfig() {
   if (res.missing) return { config: { ...DEFAULTS }, user: {}, error: null, created: false }
   if (res.error) return { config: { ...DEFAULTS }, user: {}, error: 'config.jsonc 语法错误: ' + res.error, created: false }
   const raw = res.value && typeof res.value === 'object' ? res.value : {}
-  return { config: deepMerge(DEFAULTS, raw), user: raw, error: null, created: true }
+  const clean = { ...raw }
+  if (clean.peakPreset === undefined && typeof raw.peakMode === 'string') {
+    clean.peakPreset = raw.peakMode === 'custom' ? 'legacy-custom' : raw.peakMode
+  }
+  return { config: deepMerge(DEFAULTS, clean), user: clean, error: null, created: true }
 }
 
 /** Resolve the dialogue file path (absolute, ~ expanded, relative to config dir). */

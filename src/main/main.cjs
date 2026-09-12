@@ -20,9 +20,11 @@ const paths = require('./paths.cjs')
 const { loadConfig, DEFAULTS, resolveLinesFile } = require('./config.cjs')
 const { loadLines, pickRandom, DEFAULT_LINES } = require('./lines.cjs')
 const { listSkins, loadSkin } = require('./skins.cjs')
+const { loadPeaks, findPeakPreset, PEAKS_FILE } = require('./peaks.cjs')
 const { fetchBalance, fetchPlatformUsage, isPeakTime } = require('./balance.cjs')
 const { readLedger, recordUsage, readTodayUsage } = require('./ledger.cjs')
 const { apiKey, platformToken } = require('./credentials.cjs')
+const { startKeyboardHook, stopKeyboardHook, isKeyboardHookRunning } = require('./keyboard.cjs')
 const { readJsonc, deepMerge, writeJsonAtomic } = require('./lib/jsonc.cjs')
 
 app.setAppUserModelId('MeteorNOX.WhaleDesktop')
@@ -188,6 +190,35 @@ async function verifyNaturalInteraction() {
     ' after=' + JSON.stringify(afterDrag) +
     ' moved=' + (during.x !== before.x || during.y !== before.y) +
     ' insideWorkArea=' + inside)
+
+  // 5. Lock must make the pet click-through while the lock icon remains usable.
+  await win.webContents.executeJavaScript('window.__whaleDebug.close()').catch(() => {})
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: body.x, y: body.y })
+  await sleep(350)
+  const lock = await win.webContents.executeJavaScript('JSON.stringify(window.__whaleDebug.lockCenter())')
+    .then((s) => JSON.parse(s)).catch(() => null)
+  if (lock) {
+    const clickAt = async (p) => {
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: p.x, y: p.y })
+      await sleep(120)
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: p.x, y: p.y, button: 'left', clickCount: 1 })
+      await sleep(80)
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 })
+      await sleep(450)
+    }
+    await clickAt(lock)
+    const locked = await state()
+    await clickAt(body)
+    const whileLocked = await state()
+    await clickAt(lock)
+    const unlocked = await state()
+    paths.log('verify natural: lock -> locked=' + (locked && locked.locked) +
+      ' bodyClickOpenedBubble=' + (whileLocked && whileLocked.bubbleShown) +
+      ' passthrough=' + (whileLocked && whileLocked.passthroughActive) +
+      ' unlocked=' + !(unlocked && unlocked.locked))
+  } else {
+    paths.log('verify natural: could not resolve lock centre')
+  }
 }
 
 async function runVerifyShot() {
@@ -283,6 +314,7 @@ let win = null
 let tray = null
 let configResult = { config: { ...DEFAULTS }, user: {}, error: null }
 let linesResult = null
+let peaksResult = null
 let currentSkin = null
 let balanceCache = null
 let balanceCacheAt = 0
@@ -295,6 +327,7 @@ let dragOffset = { x: 0, y: 0 }
 let dragTimer = null
 let dragCursor = { x: 0, y: 0 }
 let dragStillSince = 0
+let keyboardError = null
 
 // --- config / lines / skins -------------------------------------------------
 
@@ -308,6 +341,12 @@ function reloadLines() {
   linesResult = loadLines(configResult.config)
   if (linesResult.error) paths.log('lines error:', linesResult.error)
   return linesResult
+}
+
+function reloadPeaks() {
+  peaksResult = loadPeaks(config())
+  if (peaksResult.error) paths.log('peaks error:', peaksResult.error)
+  return peaksResult
 }
 
 /** Ensure configResult.user exists even if it was built before this field. */
@@ -336,12 +375,19 @@ function statePayload() {
     linesFile: linesResult ? linesResult.file : '',
     linesError: linesResult ? linesResult.error : null,
     groups: linesResult ? linesResult.groups : [],
+    peaksFile: peaksResult ? peaksResult.file : PEAKS_FILE,
+    peaksError: peaksResult ? peaksResult.error : null,
+    peakPresets: peaksResult ? peaksResult.presets : [],
     skin: currentSkin ? skinPayload(currentSkin) : null,
     skins: listSkins().map((s) => ({ name: s.name, displayName: s.displayName, description: s.description })),
     hasApiKey: !!apiKey(config()).value,
     keySource: apiKey(config()).source,
     hasPlatformToken: !!platformToken(config()).value,
     isPeak: isPeakTime(Math.floor(Date.now() / 1000)),
+    displayMode: config().displayMode,
+    keyboardClickMode: config().keyboardClickMode,
+    keyboardError,
+    keyboardHookRunning: isKeyboardHookRunning(),
   }
 }
 
@@ -794,10 +840,36 @@ function scheduleRefresh() {
   if (refreshTimer) clearInterval(refreshTimer)
   const ms = Math.max(10000, Number(config().refreshMs) || 60000)
   refreshTimer = setInterval(() => {
+    if (!wantsBalanceDisplay()) return
     refreshBalance(false).then((payload) => {
       sendToRenderer('whale:balance', payload)
     }).catch(() => {})
   }, ms)
+}
+
+function wantsBalanceDisplay() {
+  const cfg = config()
+  return cfg.displayMode === 'balance' ||
+    (cfg.displayMode === 'keyboard' && cfg.keyboardClickMode !== 'time')
+}
+
+function applyDisplayMode() {
+  if (config().displayMode !== 'keyboard') {
+    stopKeyboardHook()
+    keyboardError = null
+    return
+  }
+  const result = startKeyboardHook((label) => {
+    if (config().displayMode !== 'keyboard') return
+    sendToRenderer('whale:key', { label, ts: Date.now() })
+  })
+  if (!result.ok) {
+    keyboardError = result.error || 'keyboard hook unavailable'
+    paths.log('keyboard hook failed:', keyboardError)
+    sendToRenderer('whale:key', { error: keyboardError })
+  } else {
+    keyboardError = null
+  }
 }
 
 function sendToRenderer(channel, payload) {
@@ -845,6 +917,7 @@ function rebuildTrayMenu() {
     { type: 'separator' },
     { label: '打开配置文件夹', click: () => shell.openPath(paths.ROOT) },
     { label: '打开台词文件', click: () => shell.openPath(currentLinesFile()) },
+    { label: '打开峰谷文案文件', click: () => shell.openPath(PEAKS_FILE) },
     { label: '打开皮肤文件夹', click: () => shell.openPath(paths.SKINS_DIR) },
     { label: '重载配置与台词', click: () => reloadAllAndNotify() },
     { type: 'separator' },
@@ -867,13 +940,12 @@ function toggleWindow() {
 
 function reloadAllAndNotify() {
   reloadConfig()
+  reloadPeaks()
   reloadLines()
   reloadSkin()
   win?.setAlwaysOnTop(config().alwaysOnTop !== false, 'screen-saver')
-  if (win && !win.isDestroyed() && config().passthrough === false) {
-    win.setIgnoreMouseEvents(false)
-  }
   sendToRenderer('whale:state', statePayload())
+  applyDisplayMode()
   scheduleRefresh()
   rebuildTrayMenu()
 }
@@ -907,6 +979,8 @@ function setupIpc() {
     // Only pay the full reload cost for keys that need it.
     const needsSkin = patch && patch.skin !== undefined && patch.skin !== before.skin
     const needsLines = patch && (patch.linesFile !== undefined)
+    const needsDisplay = patch && (patch.displayMode !== undefined || patch.keyboardClickMode !== undefined || patch.refreshMs !== undefined)
+    const needsPeaks = patch && (patch.peakPreset !== undefined)
     if (needsSkin) reloadSkin()
     if (needsLines) reloadLines()
     if (patch && ['apiKey', 'platformToken', 'currency', 'usageMode'].some((key) => patch[key] !== undefined)) {
@@ -915,8 +989,15 @@ function setupIpc() {
     if (patch && patch.alwaysOnTop !== undefined && win && !win.isDestroyed()) {
       win.setAlwaysOnTop(merged.alwaysOnTop !== false, 'screen-saver')
     }
+    if (needsDisplay) {
+      applyDisplayMode()
+      scheduleRefresh()
+      if (wantsBalanceDisplay()) {
+        refreshBalance(false).then((payload) => sendToRenderer('whale:balance', payload)).catch(() => {})
+      }
+    }
     rebuildTrayMenu()
-    if (needsSkin || needsLines) sendToRenderer('whale:state', statePayload())
+    if (needsSkin || needsLines || needsDisplay || needsPeaks) sendToRenderer('whale:state', statePayload())
     return { config: merged, skin: needsSkin ? skinPayload(currentSkin) : undefined, groups: needsLines ? linesResult.groups : undefined }
   })
 
@@ -936,7 +1017,6 @@ function setupIpc() {
 
   ipcMain.on('whale:passthrough', (_e, ignore) => {
     if (!win || win.isDestroyed()) return
-    if (config().passthrough === false) return
     // Click-through is only allowed outside an active drag; otherwise the native
     // drag would lose its mouse capture mid-gesture.
     if (dragging && ignore) return
@@ -995,12 +1075,13 @@ function setupIpc() {
     const map = {
       config: paths.CONFIG_FILE,
       lines: currentLinesFile(),
+      peaks: PEAKS_FILE,
       skins: paths.SKINS_DIR,
       skin: currentSkin ? currentSkin.dir : paths.SKINS_DIR,
       root: paths.ROOT,
     }
     const target = map[which] || paths.ROOT
-    if (which === 'config' || which === 'lines') {
+    if (which === 'config' || which === 'lines' || which === 'peaks') {
       try {
         if (fs.existsSync(target)) shell.showItemInFolder(target)
         return true
@@ -1011,14 +1092,14 @@ function setupIpc() {
   })
 
   ipcMain.handle('whale:read-file', (_e, which) => {
-    const map = { config: paths.CONFIG_FILE, lines: currentLinesFile() }
+    const map = { config: paths.CONFIG_FILE, lines: currentLinesFile(), peaks: PEAKS_FILE }
     const target = map[which]
     if (!target) return null
     try { return fs.readFileSync(target, 'utf8') } catch (err) { return null }
   })
 
   ipcMain.handle('whale:write-file', (_e, which, text) => {
-    const map = { config: paths.CONFIG_FILE, lines: currentLinesFile() }
+    const map = { config: paths.CONFIG_FILE, lines: currentLinesFile(), peaks: PEAKS_FILE }
     const target = map[which]
     if (!target || typeof text !== 'string') return { ok: false }
     try {
@@ -1069,6 +1150,7 @@ if (!singleInstance && !VERIFY_SHOT) {
     paths.ensureLayout()
     ensureUserFiles()
     reloadConfig()
+    reloadPeaks()
     reloadLines()
     reloadSkin()
     registerAssetProtocol()
@@ -1078,10 +1160,13 @@ if (!singleInstance && !VERIFY_SHOT) {
     tray.setToolTip('小鲸鱼余额挂件')
     tray.on('click', () => toggleWindow())
     rebuildTrayMenu()
+    applyDisplayMode()
     scheduleRefresh()
     // Warm the balance cache shortly after boot.
     setTimeout(() => {
-      refreshBalance(false).then((payload) => sendToRenderer('whale:balance', payload)).catch(() => {})
+      if (wantsBalanceDisplay()) {
+        refreshBalance(false).then((payload) => sendToRenderer('whale:balance', payload)).catch(() => {})
+      }
     }, 1200)
 
     if (VERIFY_SHOT) {
@@ -1091,7 +1176,10 @@ if (!singleInstance && !VERIFY_SHOT) {
     }
   })
 
-  app.on('before-quit', () => { quitting = true })
+  app.on('before-quit', () => {
+    quitting = true
+    stopKeyboardHook()
+  })
   app.on('window-all-closed', () => {
     // Tray app: keep running with no window.
   })
