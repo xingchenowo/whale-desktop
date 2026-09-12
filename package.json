@@ -1,6 +1,6 @@
 {
   "name": "whale-desktop",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "private": true,
   "description": "DeepSeek 余额小鲸鱼桌面挂件（Windows，独立于 DSH）",
   "main": "src/main/main.cjs",

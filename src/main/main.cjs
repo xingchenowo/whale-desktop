@@ -26,6 +26,7 @@ const { readLedger, recordUsage, readTodayUsage } = require('./ledger.cjs')
 const { apiKey, platformToken } = require('./credentials.cjs')
 const { startKeyboardHook, stopKeyboardHook, isKeyboardHookRunning } = require('./keyboard.cjs')
 const { readJsonc, deepMerge, writeJsonAtomic } = require('./lib/jsonc.cjs')
+const { getAutostartState, setAutostartEnabled, syncAutostartTarget } = require('./autostart.cjs')
 
 app.setAppUserModelId('MeteorNOX.WhaleDesktop')
 
@@ -924,8 +925,14 @@ function rebuildTrayMenu() {
     {
       label: '开机自启',
       type: 'checkbox',
-      checked: app.getLoginItemSettings().openAtLogin,
-      click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked, args: ['--autostart'] }),
+      checked: getAutostartState().enabled,
+      click: (item) => {
+        const result = setAutostartEnabled(item.checked)
+        if (!result.ok) {
+          item.checked = !item.checked
+          dialog.showErrorBox('开机自启设置失败', result.error)
+        }
+      },
     },
     { type: 'separator' },
     { label: '退出', click: () => { quitting = true; app.quit() } },
@@ -1148,6 +1155,8 @@ if (!singleInstance && !VERIFY_SHOT) {
 
   app.whenReady().then(() => {
     paths.ensureLayout()
+    const autostartSync = syncAutostartTarget()
+    if (!autostartSync.ok && autostartSync.enabled) paths.log('autostart sync failed:', autostartSync.error)
     ensureUserFiles()
     reloadConfig()
     reloadPeaks()

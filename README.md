@@ -37,8 +37,8 @@
 ### 直接使用 Windows 版
 
 ```text
-WhaleDesktop-Portable-0.2.0-x64.exe   # 单文件便携版，双击直接运行
-WhaleDesktop-Setup-0.2.0-x64.exe      # NSIS 安装程序，创建快捷方式
+WhaleDesktop-Portable-0.3.1-x64.exe   # 单文件便携版，双击直接运行
+WhaleDesktop-Setup-0.3.1-x64.exe      # NSIS 安装程序，创建快捷方式
 ```
 
 两种产物都已经包含 Electron 运行时，目标电脑不需要安装 Node.js、npm 或 DSH。
@@ -84,12 +84,28 @@ npm run build:windows
 构建结果：
 
 ```text
-dist-installer\portable\WhaleDesktop-Portable-0.2.0-x64.exe
-dist-installer\nsis\WhaleDesktop-Setup-0.2.0-x64.exe
+dist-installer\portable\WhaleDesktop-Portable-0.3.1-x64.exe
+dist-installer\nsis\WhaleDesktop-Setup-0.3.1-x64.exe
 ```
 
 安装程序是**当前用户安装**，不需要管理员权限，可以选择安装目录，并创建桌面和开始菜单快捷方式。
 卸载时默认**不会删除** `%APPDATA%\dsh-whale-desktop\`，你的配置、账本和皮肤会保留。
+
+### 开机自启
+
+托盘菜单的「开机自启」不调用 Electron 的 `setLoginItemSettings`，而是由程序使用 Windows `reg.exe` 写入当前用户启动项：
+
+```text
+HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+值名：MeteorNOX.WhaleDesktop
+值内容："<已编译的 WhaleDesktop.exe>" --autostart
+```
+
+- 便携版写入 `PORTABLE_EXECUTABLE_FILE` 指向的实际便携 exe；如果之后移动了便携版，需要先取消勾选，再重新勾选。
+- 安装版写入安装目录释放出的 `WhaleDesktop.exe`。如果更换了安装目录，重新勾选一次即可更新注册表路径。
+- 开发模式 `npm start` 不会把 Electron 开发程序写入启动项；请使用已编译的便携版或安装版。
+- 如果旧版已经通过 Electron API 开启过自启，新版启动时会保留开启状态，并把同一注册表值更新为当前编译的 WhaleDesktop.exe。
+- 该启动项只对当前 Windows 用户生效，不需要管理员权限。
 
 > 当前构建没有代码签名证书，Windows SmartScreen 可能显示“未知发布者”。选择“仍要运行”即可；正式发布建议购买代码签名证书后重新打包。
 
@@ -430,6 +446,7 @@ Shift+0 -> )
 | 键盘模式按下按键 | 自动弹出气泡并显示按键，按键不会被拦截 |
 | 托盘左键 | 显示/隐藏 |
 | 托盘右键 | 皮肤 / 刷新 / 打开配置 / 开机自启 / 退出 |
+| 托盘菜单 → 开机自启 | 直接写当前用户注册表，指向已编译的 `WhaleDesktop.exe` |
 
 ---
 
@@ -456,6 +473,7 @@ whale-desktop/
 └── src/
     ├── main/
     │   ├── main.cjs        # 窗口 / 托盘 / 拖拽 / IPC
+    │   ├── autostart.cjs  # Windows 注册表开机自启（不依赖 Electron API）
     │   ├── preload.cjs     # 渲染端唯一桥梁（无 Node 暴露）
     │   ├── config.cjs      # 主配置默认值与加载
     │   ├── lines.cjs       # 台词加权抽取
