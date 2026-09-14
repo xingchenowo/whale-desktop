@@ -235,7 +235,7 @@ async function runVerifyShot() {
     }
     if (VERIFY_SKIN) {
       const r = await win.webContents.executeJavaScript(
-        'window.whale.setConfig({ skin: ' + JSON.stringify(VERIFY_SKIN) + ' })' +
+        'window.whale.setSkin(' + JSON.stringify(VERIFY_SKIN) + ')' +
         '.then(() => window.__whaleDebug.state())'
       ).catch((err) => 'ERR ' + err)
       paths.log('verify skin switch:', JSON.stringify(r))
@@ -359,9 +359,12 @@ function userConfig() {
   return configResult.user
 }
 
+function windowSkinName() {
+  return String(getState().skin || config().skin || 'default')
+}
+
 function reloadSkin() {
-  const cfg = configResult.config
-  currentSkin = loadSkin(cfg.skin)
+  currentSkin = loadSkin(windowSkinName())
   if (!currentSkin) paths.log('no skin could be loaded')
   return currentSkin
 }
@@ -786,6 +789,15 @@ function setWindowSound(patch) {
   return next
 }
 
+function setWindowSkin(name) {
+  const next = String(name || config().skin || 'default')
+  getStore().set('win', { ...getState(), skin: next })
+  reloadSkin()
+  rebuildTrayMenu()
+  sendToRenderer('whale:state', statePayload())
+  return { skin: currentSkin ? skinPayload(currentSkin) : null, config: config() }
+}
+
 function startConfigWatcher() {
   let last = 0
   try { last = fs.statSync(paths.CONFIG_FILE).mtimeMs } catch (err) {}
@@ -1109,10 +1121,7 @@ function currentLinesFile() {
 }
 
 function applySkin(name) {
-  updateConfig({ skin: name })
-  reloadSkin()
-  rebuildTrayMenu()
-  sendToRenderer('whale:state', statePayload())
+  return setWindowSkin(name)
 }
 
 // --- IPC --------------------------------------------------------------------
@@ -1267,6 +1276,7 @@ function setupIpc() {
 
   ipcMain.handle('whale:toggle-dual-pet', (_e, enabled) => toggleSecondaryPet(!!enabled))
   ipcMain.handle('whale:set-flip', (_e, value) => setWindowFlip(!!value))
+  ipcMain.handle('whale:set-skin', (_e, name) => setWindowSkin(name))
   ipcMain.handle('whale:set-sound', (_e, patch) => setWindowSound(patch))
   ipcMain.handle('whale:quit', () => { quitting = true; app.quit(); return true })
   ipcMain.handle('whale:hide', () => { if (win && !win.isDestroyed()) win.hide(); return true })

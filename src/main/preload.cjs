@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('whale', {
   hide: () => ipcRenderer.invoke('whale:hide'),
   toggleDualPet: (enabled) => ipcRenderer.invoke('whale:toggle-dual-pet', !!enabled),
   setFlip: (enabled) => ipcRenderer.invoke('whale:set-flip', !!enabled),
+  setSkin: (name) => ipcRenderer.invoke('whale:set-skin', name),
   setSound: (patch) => ipcRenderer.invoke('whale:set-sound', patch),
   quit: () => ipcRenderer.invoke('whale:quit'),
 })

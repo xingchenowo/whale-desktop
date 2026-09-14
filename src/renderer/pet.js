@@ -959,7 +959,7 @@ function buildMenu() {
   }
   skinSelect.value = skin.name || 'default'
   skinSelect.addEventListener('change', () => {
-    window.whale.setConfig({ skin: skinSelect.value }).then((res) => {
+    window.whale.setSkin(skinSelect.value).then((res) => {
       // setConfig returns the freshly resolved skin/geometry; apply it here so the
       // new skin takes effect immediately instead of waiting for the next state push.
       if (res && res.skin) {
