@@ -15,6 +15,7 @@
 const { app, BrowserWindow, ipcMain, screen, Tray, Menu, shell, nativeImage, dialog } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
+const { spawn } = require('node:child_process')
 
 const paths = require('./paths.cjs')
 const { loadConfig, DEFAULTS, resolveLinesFile } = require('./config.cjs')
@@ -28,7 +29,7 @@ const { startKeyboardHook, stopKeyboardHook, isKeyboardHookRunning } = require('
 const { readJsonc, deepMerge, writeJsonAtomic } = require('./lib/jsonc.cjs')
 const { getAutostartState, setAutostartEnabled, syncAutostartTarget } = require('./autostart.cjs')
 
-app.setAppUserModelId('MeteorNOX.WhaleDesktop')
+app.setAppUserModelId('H1kaRU.WhaleDesktop')
 
 const PACKAGE_ROOT = path.resolve(__dirname, '..', '..')
 const BALANCE_TTL_MS = 25000
@@ -57,6 +58,7 @@ const VERIFY_BOOT_MS = (() => {
   const i = process.argv.indexOf('--wait-ms')
   return i !== -1 ? Math.max(500, Number(process.argv[i + 1]) || 4000) : 4000
 })()
+const SECOND_PET = process.argv.includes('--second-pet')
 
 // --- natural interaction harness -------------------------------------------
 //
@@ -317,6 +319,7 @@ let configResult = { config: { ...DEFAULTS }, user: {}, error: null }
 let linesResult = null
 let peaksResult = null
 let currentSkin = null
+let secondaryProcess = null
 let balanceCache = null
 let balanceCacheAt = 0
 let balanceInFlight = null
@@ -379,6 +382,10 @@ function statePayload() {
     peaksFile: peaksResult ? peaksResult.file : PEAKS_FILE,
     peaksError: peaksResult ? peaksResult.error : null,
     peakPresets: peaksResult ? peaksResult.presets : [],
+    ...windowSoundState(),
+    secondaryPet: SECOND_PET,
+    dualPet: SECOND_PET ? true : !!secondaryProcess,
+    flipHorizontal: getState().flipHorizontal === true,
     skin: currentSkin ? skinPayload(currentSkin) : null,
     skins: listSkins().map((s) => ({ name: s.name, displayName: s.displayName, description: s.description })),
     hasApiKey: !!apiKey(config()).value,
@@ -546,7 +553,7 @@ function getState() {
 function getStore() {
   // tiny lazy JSON store for window geometry + anchor
   if (!getStore._s) {
-    const file = path.join(paths.ROOT, '.window.json')
+    const file = path.join(paths.ROOT, SECOND_PET ? '.window-secondary.json' : '.window.json')
     getStore._s = {
       get(key, dflt) {
         try {
@@ -647,13 +654,19 @@ function updateAnchors(hAnchor, vAnchor) {
  * area first — monitors get unplugged or change resolution, and a window restored
  * off-screen would be invisible and impossible to drag back.
  */
-function resolveInitialBounds(w, h) {
+function resolveInitialBounds(w, h, offset) {
   const saved = getState().rect
+  let x
+  let y
   if (!saved || saved.x === undefined || saved.y === undefined) {
     const r = anchorRect(w, h)
-    return { x: r.x, y: r.y }
+    x = r.x + (offset ? (Number(offset.x) || 0) : 0)
+    y = r.y + (offset ? (Number(offset.y) || 0) : 0)
+  } else {
+    x = Math.round(saved.x)
+    y = Math.round(saved.y)
   }
-  const probe = { x: Math.round(saved.x), y: Math.round(saved.y), width: w, height: h }
+  const probe = { x: Math.round(x), y: Math.round(y), width: w, height: h }
   const display = screen.getDisplayMatching(probe)
   const wa = display.workArea
   return {
@@ -666,7 +679,7 @@ function createWindow() {
   const saved = getState().rect
   const w = saved && saved.w ? saved.w : 560
   const h = saved && saved.h ? saved.h : 520
-  const pos = resolveInitialBounds(w, h)
+  const pos = resolveInitialBounds(w, h, SECOND_PET ? { x: -220, y: -140 } : null)
 
   win = new BrowserWindow({
     width: w,
@@ -722,6 +735,122 @@ function createWindow() {
       win.hide()
     }
   })
+}
+
+// --- second pet -------------------------------------------------------------
+
+function secondPetLaunchTarget() {
+  const portable = process.env.PORTABLE_EXECUTABLE_FILE
+  if (portable && fs.existsSync(portable)) {
+    return { exe: path.resolve(portable), args: ['--second-pet'] }
+  }
+  if (process.defaultApp) {
+    return { exe: process.execPath, args: [PACKAGE_ROOT, '--second-pet'] }
+  }
+  return { exe: process.execPath, args: ['--second-pet'] }
+}
+
+function notifyDualPetState() {
+  rebuildTrayMenu()
+  sendToRenderer('whale:state', statePayload())
+}
+
+function setWindowFlip(value) {
+  const state = getState()
+  getStore().set('win', { ...state, flipHorizontal: !!value })
+  rebuildTrayMenu()
+  sendToRenderer('whale:state', statePayload())
+  return { flipHorizontal: !!value }
+}
+
+function windowSoundState() {
+  const state = getState()
+  const cfg = config()
+  return {
+    soundOn: state.soundOn === undefined ? cfg.sound !== false : !!state.soundOn,
+    volume: typeof state.volume === 'number'
+      ? Math.max(0, Math.min(1, state.volume))
+      : (typeof cfg.volume === 'number' ? Math.max(0, Math.min(1, cfg.volume)) : 0.9),
+    soundSet: String(state.soundSet || cfg.soundSet || 'duck'),
+  }
+}
+
+function setWindowSound(patch) {
+  const current = windowSoundState()
+  const next = { ...current }
+  if (patch && patch.soundOn !== undefined) next.soundOn = !!patch.soundOn
+  if (patch && patch.soundSet !== undefined) next.soundSet = String(patch.soundSet)
+  if (patch && patch.volume !== undefined) next.volume = Math.max(0, Math.min(1, Number(patch.volume) || 0))
+  getStore().set('win', { ...getState(), ...next })
+  sendToRenderer('whale:state', statePayload())
+  return next
+}
+
+function startConfigWatcher() {
+  let last = 0
+  try { last = fs.statSync(paths.CONFIG_FILE).mtimeMs } catch (err) {}
+  setInterval(() => {
+    let mtime = 0
+    try { mtime = fs.statSync(paths.CONFIG_FILE).mtimeMs } catch (err) { return }
+    if (!mtime || mtime === last) return
+    last = mtime
+    reloadConfig()
+    reloadPeaks()
+    reloadLines()
+    reloadSkin()
+    if (!SECOND_PET) {
+      applyDisplayMode()
+      scheduleRefresh()
+      rebuildTrayMenu()
+    }
+    sendToRenderer('whale:state', statePayload())
+  }, 1500)
+}
+
+function startSecondaryPet() {
+  if (SECOND_PET || secondaryProcess) return
+  const target = secondPetLaunchTarget()
+  let child
+  try {
+    child = spawn(target.exe, target.args, { stdio: 'ignore', windowsHide: true })
+  } catch (err) {
+    paths.log('secondary pet spawn failed:', String((err && err.message) || err))
+    return
+  }
+  secondaryProcess = child
+  child.once('error', (err) => {
+    paths.log('secondary pet spawn failed:', String((err && err.message) || err))
+    if (secondaryProcess === child) secondaryProcess = null
+    notifyDualPetState()
+  })
+  child.once('exit', () => {
+    if (secondaryProcess === child) secondaryProcess = null
+    notifyDualPetState()
+  })
+  child.unref()
+  notifyDualPetState()
+}
+
+function stopSecondaryPet() {
+  const child = secondaryProcess
+  secondaryProcess = null
+  if (child && !child.killed) {
+    try { child.kill() } catch (err) {}
+  }
+  notifyDualPetState()
+}
+
+function toggleSecondaryPet(enabled) {
+  if (SECOND_PET) {
+    if (!enabled) {
+      quitting = true
+      app.quit()
+    }
+    return { enabled: false }
+  }
+  if (enabled) startSecondaryPet()
+  else stopSecondaryPet()
+  return { enabled: !!secondaryProcess }
 }
 
 // --- cursor-following drag --------------------------------------------------
@@ -916,9 +1045,27 @@ function rebuildTrayMenu() {
       },
     },
     { type: 'separator' },
-    { label: '打开配置文件夹', click: () => shell.openPath(paths.ROOT) },
-    { label: '打开台词文件', click: () => shell.openPath(currentLinesFile()) },
-    { label: '打开峰谷文案文件', click: () => shell.openPath(PEAKS_FILE) },
+    {
+      label: '双开桌宠',
+      type: 'checkbox',
+      checked: SECOND_PET || !!secondaryProcess,
+      click: (item) => toggleSecondaryPet(item.checked),
+    },
+    {
+      label: '水平翻转',
+      type: 'checkbox',
+      checked: getState().flipHorizontal === true,
+      click: (item) => setWindowFlip(!!item.checked),
+    },
+    { type: 'separator' },
+    {
+      label: '打开配置',
+      submenu: [
+        { label: '打开配置文件夹', click: () => shell.openPath(paths.ROOT) },
+        { label: '打开台词文件', click: () => shell.openPath(currentLinesFile()) },
+        { label: '打开峰谷文件', click: () => shell.openPath(PEAKS_FILE) },
+      ],
+    },
     { label: '打开皮肤文件夹', click: () => shell.openPath(paths.SKINS_DIR) },
     { label: '重载配置与台词', click: () => reloadAllAndNotify() },
     { type: 'separator' },
@@ -1118,6 +1265,9 @@ function setupIpc() {
     }
   })
 
+  ipcMain.handle('whale:toggle-dual-pet', (_e, enabled) => toggleSecondaryPet(!!enabled))
+  ipcMain.handle('whale:set-flip', (_e, value) => setWindowFlip(!!value))
+  ipcMain.handle('whale:set-sound', (_e, patch) => setWindowSound(patch))
   ipcMain.handle('whale:quit', () => { quitting = true; app.quit(); return true })
   ipcMain.handle('whale:hide', () => { if (win && !win.isDestroyed()) win.hide(); return true })
 }
@@ -1145,7 +1295,7 @@ function registerAssetProtocol() {
 
 // --- app lifecycle ----------------------------------------------------------
 
-const singleInstance = app.requestSingleInstanceLock()
+const singleInstance = SECOND_PET ? true : app.requestSingleInstanceLock()
 if (!singleInstance && !VERIFY_SHOT) {
   app.quit()
 } else {
@@ -1155,8 +1305,10 @@ if (!singleInstance && !VERIFY_SHOT) {
 
   app.whenReady().then(() => {
     paths.ensureLayout()
-    const autostartSync = syncAutostartTarget()
-    if (!autostartSync.ok && autostartSync.enabled) paths.log('autostart sync failed:', autostartSync.error)
+    if (!SECOND_PET) {
+      const autostartSync = syncAutostartTarget()
+      if (!autostartSync.ok && autostartSync.enabled) paths.log('autostart sync failed:', autostartSync.error)
+    }
     ensureUserFiles()
     reloadConfig()
     reloadPeaks()
@@ -1165,18 +1317,21 @@ if (!singleInstance && !VERIFY_SHOT) {
     registerAssetProtocol()
     setupIpc()
     createWindow()
-    tray = new Tray(trayIcon())
-    tray.setToolTip('小鲸鱼余额挂件')
-    tray.on('click', () => toggleWindow())
-    rebuildTrayMenu()
-    applyDisplayMode()
-    scheduleRefresh()
-    // Warm the balance cache shortly after boot.
-    setTimeout(() => {
-      if (wantsBalanceDisplay()) {
-        refreshBalance(false).then((payload) => sendToRenderer('whale:balance', payload)).catch(() => {})
-      }
-    }, 1200)
+    startConfigWatcher()
+    if (!SECOND_PET) {
+      tray = new Tray(trayIcon())
+      tray.setToolTip('WhaleDesketop')
+      tray.on('click', () => toggleWindow())
+      rebuildTrayMenu()
+      applyDisplayMode()
+      scheduleRefresh()
+      // Warm the balance cache shortly after boot.
+      setTimeout(() => {
+        if (wantsBalanceDisplay()) {
+          refreshBalance(false).then((payload) => sendToRenderer('whale:balance', payload)).catch(() => {})
+        }
+      }, 1200)
+    }
 
     if (VERIFY_SHOT) {
       const startVerify = () => setTimeout(() => runVerifyShot(), VERIFY_BOOT_MS)
@@ -1187,6 +1342,7 @@ if (!singleInstance && !VERIFY_SHOT) {
 
   app.on('before-quit', () => {
     quitting = true
+    if (!SECOND_PET) stopSecondaryPet()
     stopKeyboardHook()
   })
   app.on('window-all-closed', () => {

@@ -55,5 +55,8 @@ contextBridge.exposeInMainWorld('whale', {
   readFile: (which) => ipcRenderer.invoke('whale:read-file', which),
   writeFile: (which, text) => ipcRenderer.invoke('whale:write-file', which, text),
   hide: () => ipcRenderer.invoke('whale:hide'),
+  toggleDualPet: (enabled) => ipcRenderer.invoke('whale:toggle-dual-pet', !!enabled),
+  setFlip: (enabled) => ipcRenderer.invoke('whale:set-flip', !!enabled),
+  setSound: (patch) => ipcRenderer.invoke('whale:set-sound', patch),
   quit: () => ipcRenderer.invoke('whale:quit'),
 })

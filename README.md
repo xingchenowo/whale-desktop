@@ -37,11 +37,11 @@
 ### 直接使用 Windows 版
 
 ```text
-WhaleDesktop-Portable-0.3.1-x64.exe   # 单文件便携版，双击直接运行
-WhaleDesktop-Setup-0.3.1-x64.exe      # NSIS 安装程序，创建快捷方式
+WhaleDesktop-Portable-0.3.2-x64.exe   # 单文件便携版，双击直接运行
+WhaleDesktop-Setup-0.3.2-x64.exe      # NSIS 安装程序，创建快捷方式
 ```
 
-两种产物都已经包含 Electron 运行时，目标电脑不需要安装 Node.js、npm 或 DSH。
+安装后的应用名和快捷方式名称为 **WhaleDesktop(v0.3.2)**。两种产物都已经包含 Electron 运行时，目标电脑不需要安装 Node.js、npm 或 DSH。
 用户数据仍写在 `%APPDATA%\dsh-whale-desktop\`，升级或卸载程序不会自动删除配置和皮肤。
 
 ### 从源码运行
@@ -53,7 +53,7 @@ npm start
 ```
 
 启动后：右下角出现小鲸鱼 → 托盘出现鲸鱼图标。
-左键托盘图标可显示/隐藏，右键打开菜单（皮肤 / 刷新 / 打开配置 / 开机自启 / 退出）。
+左键托盘图标可显示/隐藏，右键打开菜单（皮肤 / 刷新 / 双开桌宠 / 水平翻转 / 打开配置 / 开机自启 / 退出）。
 
 **想让挂件在关掉终端后继续运行**，用附带脚本以后台方式启动：
 
@@ -84,8 +84,8 @@ npm run build:windows
 构建结果：
 
 ```text
-dist-installer\portable\WhaleDesktop-Portable-0.3.1-x64.exe
-dist-installer\nsis\WhaleDesktop-Setup-0.3.1-x64.exe
+dist-installer\portable\WhaleDesktop-Portable-0.3.2-x64.exe
+dist-installer\nsis\WhaleDesktop-Setup-0.3.2-x64.exe
 ```
 
 安装程序是**当前用户安装**，不需要管理员权限，可以选择安装目录，并创建桌面和开始菜单快捷方式。
@@ -97,14 +97,14 @@ dist-installer\nsis\WhaleDesktop-Setup-0.3.1-x64.exe
 
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run
-值名：MeteorNOX.WhaleDesktop
+值名：H1kaRU.WhaleDesktop
 值内容："<已编译的 WhaleDesktop.exe>" --autostart
 ```
 
 - 便携版写入 `PORTABLE_EXECUTABLE_FILE` 指向的实际便携 exe；如果之后移动了便携版，需要先取消勾选，再重新勾选。
-- 安装版写入安装目录释放出的 `WhaleDesktop.exe`。如果更换了安装目录，重新勾选一次即可更新注册表路径。
+- 安装版写入安装目录释放出的 `WhaleDesktop(v0.3.2).exe`。如果更换了安装目录，重新勾选一次即可更新注册表路径。
 - 开发模式 `npm start` 不会把 Electron 开发程序写入启动项；请使用已编译的便携版或安装版。
-- 如果旧版已经通过 Electron API 开启过自启，新版启动时会保留开启状态，并把同一注册表值更新为当前编译的 WhaleDesktop.exe。
+- 旧版 `MeteorNOX.WhaleDesktop` 启动项会在新版启动时自动迁移到 `H1kaRU.WhaleDesktop`，并删除旧值。
 - 该启动项只对当前 Windows 用户生效，不需要管理员权限。
 
 > 当前构建没有代码签名证书，Windows SmartScreen 可能显示“未知发布者”。选择“仍要运行”即可；正式发布建议购买代码签名证书后重新打包。
@@ -149,7 +149,7 @@ npm run build:portable
 └── whale.log           运行日志（排查问题用）
 ```
 
-菜单里的「配置文件 / 台词文件 / 皮肤文件夹 / 当前皮肤」四个按钮会直接帮你打开对应位置。
+菜单里的「配置文件 / 台词文件 / 峰谷文案 / 皮肤文件夹 / 当前皮肤」按钮会直接帮你打开对应位置。
 改完文件点菜单「重载配置」即可生效，**不用重启**。
 
 ---
@@ -354,7 +354,7 @@ Copy-Item -Recurse default my-whale
 
 | `refreshMs` | `60000` | 余额刷新间隔（最小 10000） |
 | `peakPreset` | `"default"` | 独立 `peaks.jsonc` 中选中的峰谷文案项 id |
-| `sound` / `volume` / `soundSet` | `true` / `0.9` / `"duck"` | 音效 |
+| `sound` / `volume` / `soundSet` | `true` / `0.9` / `"duck"` | 音效开关、音量和皮肤自带音效组；双开时每个桌宠独立保存 |
 | `draggable` | `true` | 允许拖动 |
 | `passthrough` | `true` | 非挂件区域点击穿透 |
 | `showMenuButton` | `true` | 悬停显示汉堡按钮 |
@@ -445,8 +445,12 @@ Shift+0 -> )
 | 点击左上角锁图标 | 锁定 / 解除锁定；锁定时锁图标常驻，桌宠其余区域全部鼠标穿透 |
 | 键盘模式按下按键 | 自动弹出气泡并显示按键，按键不会被拦截 |
 | 托盘左键 | 显示/隐藏 |
-| 托盘右键 | 皮肤 / 刷新 / 打开配置 / 开机自启 / 退出 |
-| 托盘菜单 → 开机自启 | 直接写当前用户注册表，指向已编译的 `WhaleDesktop.exe` |
+| 托盘右键 | 皮肤 / 刷新 / 双开桌宠 / 水平翻转 / 打开配置 / 开机自启 / 退出 |
+| 托盘菜单 → 打开配置 | 第二级：打开配置文件夹 / 打开台词文件 / 打开峰谷文件 |
+| 托盘菜单 → 开机自启 | 直接写当前用户注册表，指向已编译的 `WhaleDesktop(v0.3.2).exe` |
+| 菜单 → 双开桌宠 | 启动或关闭第二个独立桌宠窗口 |
+| 菜单 → 水平翻转 | 只翻转当前桌宠；双开时两个桌宠各自独立控制 |
+| 菜单 → 音效 | 原音效控制：开关 / 皮肤音效组 / 音量；双开时每个桌宠独立保存 |
 
 ---
 

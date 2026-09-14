@@ -37,6 +37,13 @@ html, body {
   pointer-events: none;
 }
 
+.pet-img-wrap {
+  position: absolute;
+  pointer-events: none;
+  transform-origin: 50% 50%;
+  transition: transform .22s cubic-bezier(.34, 1.56, .64, 1);
+}
+
 .pet-img {
   position: absolute;
   display: block;
@@ -51,6 +58,11 @@ html, body {
 .pet.pressed .pet-img {
   transform: scaleY(.9) scaleX(1.05);
   transition: transform .08s ease-out;
+}
+
+/* Optional mirror. The hit mask is mirrored in JS as well. */
+.pet.flip-horizontal .pet-img-wrap {
+  transform: scaleX(-1);
 }
 
 /* --- bubble --------------------------------------------------------------- */

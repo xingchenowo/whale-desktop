@@ -7,7 +7,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
-const VALUE_NAME = 'MeteorNOX.WhaleDesktop'
+const VALUE_NAME = 'H1kaRU.WhaleDesktop'
+const LEGACY_VALUE_NAMES = ['MeteorNOX.WhaleDesktop']
 const REG_EXE = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe')
 
 function executablePath() {
@@ -44,26 +45,48 @@ function errorText(err) {
   return stderr || (err && err.message) || String(err)
 }
 
+function queryValue(name) {
+  try {
+    runReg(['query', RUN_KEY, '/v', name])
+    return { ok: true, enabled: true, error: '' }
+  } catch (err) {
+    // reg.exe returns 1 when the value or key does not exist.
+    if (err && err.status === 1) return { ok: true, enabled: false, error: '' }
+    return { ok: false, enabled: false, error: errorText(err) }
+  }
+}
+
+function deleteValue(name) {
+  try {
+    runReg(['delete', RUN_KEY, '/v', name, '/f'])
+  } catch (err) {
+    if (!err || err.status !== 1) throw err
+  }
+}
+
 function getAutostartState() {
   const exe = executablePath()
   if (process.platform !== 'win32') {
-    return { enabled: false, exe, error: '开机自启仅支持 Windows' }
+    return { enabled: false, exe, legacy: false, error: '开机自启仅支持 Windows' }
   }
-  try {
-    runReg(['query', RUN_KEY, '/v', VALUE_NAME])
-    return { enabled: true, exe, error: '' }
-  } catch (err) {
-    // reg.exe returns 1 when the value or key does not exist.
-    if (err && err.status === 1) return { enabled: false, exe, error: '' }
-    return { enabled: false, exe, error: errorText(err) }
+  const current = queryValue(VALUE_NAME)
+  if (!current.ok) return { enabled: false, exe, legacy: false, error: current.error }
+  if (current.enabled) return { enabled: true, exe, legacy: false, error: '' }
+  for (const name of LEGACY_VALUE_NAMES) {
+    const legacy = queryValue(name)
+    if (!legacy.ok) return { enabled: false, exe, legacy: false, error: legacy.error }
+    if (legacy.enabled) return { enabled: true, exe, legacy: true, legacyName: name, error: '' }
   }
+  return { enabled: false, exe, legacy: false, error: '' }
 }
 
 function syncAutostartTarget() {
   const state = getAutostartState()
   if (!state.enabled) return { ok: true, enabled: false, exe: state.exe, error: '' }
   if (!state.exe) return { ok: false, enabled: true, exe: '', error: '当前无法确定已编译的 WhaleDesktop.exe 路径' }
-  return setAutostartEnabled(true)
+  const result = setAutostartEnabled(true)
+  if (!result.ok) return result
+  return { ...result, migrated: !!state.legacy }
 }
 
 function setAutostartEnabled(enabled) {
@@ -81,13 +104,10 @@ function setAutostartEnabled(enabled) {
   try {
     if (enabled) {
       runReg(['add', RUN_KEY, '/v', VALUE_NAME, '/t', 'REG_SZ', '/d', buildRunValue(exe), '/f'])
+      for (const name of LEGACY_VALUE_NAMES) deleteValue(name)
     } else {
-      try {
-        runReg(['delete', RUN_KEY, '/v', VALUE_NAME, '/f'])
-      } catch (err) {
-        // Deleting an already-absent value is a successful "disabled" state.
-        if (!err || err.status !== 1) throw err
-      }
+      deleteValue(VALUE_NAME)
+      for (const name of LEGACY_VALUE_NAMES) deleteValue(name)
     }
     return { ok: true, enabled: !!enabled, exe, error: '' }
   } catch (err) {

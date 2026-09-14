@@ -49,6 +49,9 @@ const state = {
   bubbleMs: 5000,
   showMenuButton: true,
   draggable: true,
+  flipHorizontal: false,
+  secondaryPet: false,
+  dualPet: false,
   locked: false,
   lockVisible: false,
 }
@@ -56,6 +59,7 @@ const state = {
 let root = null
 let stage = null
 let petBox = null
+let imgWrap = null
 let imgEl = null
 let bubbleEl = null
 let gifEl = null
@@ -232,10 +236,14 @@ function applyLayout() {
   petBox.style.height = L.contentH + 'px'
   petBox.style.setProperty('--bubble-w', L.bubbleW + 'px')
 
-  imgEl.style.left = L.imageLeft + 'px'
-  imgEl.style.top = L.imageTop + 'px'
-  imgEl.style.width = L.imageW + 'px'
-  imgEl.style.height = L.imageH + 'px'
+  imgWrap.style.left = L.imageLeft + 'px'
+  imgWrap.style.top = L.imageTop + 'px'
+  imgWrap.style.width = L.imageW + 'px'
+  imgWrap.style.height = L.imageH + 'px'
+  imgEl.style.left = '0px'
+  imgEl.style.top = '0px'
+  imgEl.style.width = '100%'
+  imgEl.style.height = '100%'
 
   bubbleEl.style.left = L.bubbleLeft + 'px'
   bubbleEl.style.top = L.bubbleTop + 'px'
@@ -320,7 +328,13 @@ function rebuildHitMask() {
   hitImage.onload = () => {
     try {
       hitCtx.clearRect(0, 0, w, h)
+      hitCtx.save()
+      if (state.flipHorizontal) {
+        hitCtx.translate(w, 0)
+        hitCtx.scale(-1, 1)
+      }
       hitCtx.drawImage(hitImage, 0, 0, w, h)
+      hitCtx.restore()
       hitReady = true
     } catch (err) { hitReady = false }
   }
@@ -1037,7 +1051,7 @@ function buildMenu() {
 
   // sound set + volume
   const soundRow = menuRow()
-  const soundToggle = makeCheckbox(state.soundOn, (v) => { state.soundOn = v; applySoundSet(); saveConfig({ sound: v }) })
+  const soundToggle = makeCheckbox(state.soundOn, (v) => { state.soundOn = v; applySoundSet(); window.whale.setSound({ soundOn: v }).catch(() => {}) })
   soundRow.appendChild(soundToggle)
   const soundSelect = document.createElement('select')
   soundSelect.className = 'select'
@@ -1059,7 +1073,7 @@ function buildMenu() {
   soundSelect.addEventListener('change', () => {
     state.soundSet = soundSelect.value
     applySoundSet()
-    saveConfig({ soundSet: state.soundSet })
+    window.whale.setSound({ soundSet: state.soundSet }).catch(() => {})
   })
   soundRow.appendChild(soundSelect)
   const vol = document.createElement('input')
@@ -1077,7 +1091,7 @@ function buildMenu() {
     volPct.textContent = vol.value + '%'
     for (const a of [pressAudio, releaseAudio]) if (a) a.volume = state.volume
   })
-  vol.addEventListener('change', () => saveConfig({ volume: state.volume }))
+  vol.addEventListener('change', () => window.whale.setSound({ volume: state.volume }).catch(() => {}))
   const volRow = menuRow()
   volRow.appendChild(menuLabel('音量'))
   volRow.appendChild(vol)
@@ -1172,6 +1186,26 @@ function buildMenu() {
   menuBox.appendChild(dragRow)
   menuBox.appendChild(passRow)
   menuBox.appendChild(topRow)
+
+  const dualRow = menuRow()
+  dualRow.appendChild(makeCheckbox(state.dualPet, (v) => {
+    window.whale.toggleDualPet(v).then((res) => {
+      state.dualPet = !!(res && res.enabled)
+      buildMenuContents()
+    }).catch(() => {})
+  }))
+  dualRow.appendChild(menuLabel('双开桌宠'))
+  menuBox.appendChild(dualRow)
+
+  const flipRow = menuRow()
+  flipRow.appendChild(makeCheckbox(state.flipHorizontal, (v) => {
+    state.flipHorizontal = v
+    petBox.classList.toggle('flip-horizontal', v)
+    rebuildHitMask()
+    window.whale.setFlip(v).catch(() => {})
+  }))
+  flipRow.appendChild(menuLabel('水平翻转'))
+  menuBox.appendChild(flipRow)
 
   menuBox.appendChild(sep())
 
@@ -1323,12 +1357,17 @@ function applyStatePayload(payload) {
   if (payload.isPeak !== undefined) state.isPeak = payload.isPeak
   if (payload.keyboardError !== undefined) state.keyboardError = payload.keyboardError || null
   if (payload.keyboardHookRunning !== undefined) state.keyboardHookRunning = !!payload.keyboardHookRunning
+  if (payload.secondaryPet !== undefined) state.secondaryPet = !!payload.secondaryPet
+  if (payload.dualPet !== undefined) state.dualPet = !!payload.dualPet
+  if (payload.flipHorizontal !== undefined) state.flipHorizontal = !!payload.flipHorizontal
 
   const c = state.config
   state.scale = Number(c.scale) || 1.4
-  state.soundOn = c.sound !== false
-  state.volume = typeof c.volume === 'number' ? c.volume : 0.9
-  state.soundSet = c.soundSet || 'duck'
+  state.soundOn = payload.soundOn !== undefined ? !!payload.soundOn : (c.sound !== false)
+  state.volume = typeof payload.volume === 'number'
+    ? payload.volume
+    : (typeof c.volume === 'number' ? c.volume : 0.9)
+  state.soundSet = payload.soundSet || c.soundSet || 'duck'
   state.usageMode = c.usageMode === 'token' ? 'token' : 'ledger'
   state.peakPreset = c.peakPreset || 'default'
   state.displayMode = ['balance', 'time', 'keyboard'].includes(c.displayMode) ? c.displayMode : 'balance'
@@ -1338,6 +1377,7 @@ function applyStatePayload(payload) {
   state.bubbleMs = Number(c.bubbleMs) || 5000
   state.showMenuButton = c.showMenuButton !== false
   state.draggable = c.draggable !== false
+  if (petBox) petBox.classList.toggle('flip-horizontal', state.flipHorizontal)
 
   if (state.skin) {
     state.geometry = state.skin.geometry
@@ -1347,6 +1387,7 @@ function applyStatePayload(payload) {
   }
 
   menuBtn.style.display = state.showMenuButton ? '' : 'none'
+  applySoundSet()
   updateLockButton()
   baseSize = 320 * state.scale
   applyLayout()
@@ -1369,9 +1410,14 @@ function applySkinToDom() {
 
 /** Rebuild the menu in place (needed after a skin change alters sound sets). */
 function buildMenuContents() {
+  const wasOpen = menuOpen
   const old = menuBox
   if (old && old.parentNode) old.parentNode.removeChild(old)
   buildMenu()
+  if (wasOpen) {
+    menuBox.classList.add('open')
+    positionMenu()
+  }
 }
 
 async function refresh(manual) {
@@ -1402,11 +1448,14 @@ async function boot() {
   petBox = document.createElement('div')
   petBox.className = 'pet'
 
+  imgWrap = document.createElement('div')
+  imgWrap.className = 'pet-img-wrap'
   imgEl = document.createElement('img')
   imgEl.className = 'pet-img'
   imgEl.alt = '小鲸鱼'
   imgEl.draggable = false
   imgEl.style.webkitAppRegion = 'no-drag'
+  imgWrap.appendChild(imgEl)
 
   bubbleEl = document.createElement('div')
   bubbleEl.className = 'bubble'
@@ -1445,7 +1494,7 @@ async function boot() {
   lockBtn.textContent = '🔓'
   lockBtn.title = '锁定桌宠（鼠标穿透）'
 
-  petBox.appendChild(imgEl)
+  petBox.appendChild(imgWrap)
   petBox.appendChild(bubbleEl)
   root.appendChild(petBox)
   root.appendChild(lockBtn)
@@ -1457,7 +1506,7 @@ async function boot() {
   applyStatePayload(payload)
   updateLockButton()
   buildMenu()
-  if (isBalanceDisplay()) await refresh(false)
+  if (!state.secondaryPet && isBalanceDisplay()) await refresh(false)
 
   window.whale.onState((p) => applyStatePayload(p))
   window.whale.onBalance((p) => renderBalance(p))
@@ -1610,6 +1659,12 @@ async function boot() {
       peakPreset: state.peakPreset,
       peakPresets: state.peakPresets,
       peaksError: state.peaksError,
+      soundOn: state.soundOn,
+      volume: state.volume,
+      soundSet: state.soundSet,
+      flipHorizontal: state.flipHorizontal,
+      secondaryPet: state.secondaryPet,
+      dualPet: state.dualPet,
       locked: state.locked,
       lockVisible: state.lockVisible,
       keyboardError: state.keyboardError,
