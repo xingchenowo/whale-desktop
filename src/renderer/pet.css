@@ -65,6 +65,12 @@ html, body {
   transform: scaleX(-1);
 }
 
+/* The balloon artwork mirrors with the pet so its tail keeps pointing at the
+   head; the text/GIF live in their own layer and stay unmirrored. */
+.pet.flip-horizontal .bubble svg {
+  transform: scaleX(-1);
+}
+
 /* --- bubble --------------------------------------------------------------- */
 
 .bubble {

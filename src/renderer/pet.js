@@ -170,17 +170,24 @@ function computeLayout() {
   // balloon relative to it, which is what makes 3/4-height positioning work.
   const rawImageTop = bubbleH - imageH - bubbleW * (Number(img.bottom) || 0)
 
+  // 水平翻转：把「气泡 + 立绘」的横向排布整体镜像，气泡就跟到人物正前方去了。
+  // 立绘本身还会被 .flip-horizontal 的 CSS 再镜像一次，合起来正好等于整体镜像；
+  // 文字/数值不参与镜像，永远是正的。
+  const flipped = state.flipHorizontal === true
+  const bubbleX = flipped ? -(rawBubbleLeft + bubbleW) : rawBubbleLeft
+  const imageX = flipped ? -(rawImageLeft + imageW) : rawImageLeft
+
   // A negative bubble offset means "extend the window left/up and keep the pet
   // anchored", rather than clipping the balloon outside the rendering area.
-  const minX = Math.min(0, rawBubbleLeft, rawImageLeft)
+  const minX = Math.min(0, bubbleX, imageX)
   const minY = Math.min(0, rawBubbleTop, rawImageTop)
-  const maxX = Math.max(rawBubbleLeft + bubbleW, rawImageLeft + imageW)
+  const maxX = Math.max(bubbleX + bubbleW, imageX + imageW)
   const maxY = Math.max(rawBubbleTop + bubbleH, rawImageTop + imageH)
   const shiftX = -minX
   const shiftY = -minY
-  const bubbleLeft = rawBubbleLeft + shiftX
+  const bubbleLeft = bubbleX + shiftX
   const bubbleTop = rawBubbleTop + shiftY
-  const imageLeft = rawImageLeft + shiftX
+  const imageLeft = imageX + shiftX
   const imageTop = rawImageTop + shiftY
   const contentW = Math.max(1, maxX - minX)
   const contentH = Math.max(1, maxY - minY)
@@ -196,7 +203,12 @@ function computeLayout() {
 
   const lockCfg = g.lockBtn || {}
   const lockSize = (Number(lockCfg.size) || 28) * uiScale
-  const lockLeft = pad + imageLeft + (Number(lockCfg.offsetX) || 0) * uiScale
+  const lockOffsetX = (Number(lockCfg.offsetX) || 0) * uiScale
+  // 锁图标默认停在立绘左上角；翻转后立绘在盒子里换到了另一边，图标要跟着换角，
+  // 否则会和同样被镜像过去的汉堡按钮叠在同一个角落。
+  const lockLeft = flipped
+    ? pad + imageLeft + imageW - lockSize - lockOffsetX
+    : pad + imageLeft + lockOffsetX
   const lockTop = pad + imageTop + (Number(lockCfg.offsetY) || 0) * uiScale
 
   return {
@@ -206,7 +218,8 @@ function computeLayout() {
     windowW: Math.ceil(contentW + pad * 2),
     windowH: Math.ceil(contentH + pad * 2),
     button: {
-      left: pad + contentW - btnSize - btnRight,
+      // 翻转后立绘换到左边，按钮也跟着换边，免得盖在立绘上
+      left: flipped ? pad + btnRight : pad + contentW - btnSize - btnRight,
       top: pad + btnTop,
       width: btnSize,
       height: btnSize,
@@ -229,6 +242,10 @@ function applyLayout() {
   const font = g.font || {}
   const text = g.text || { leftPct: 0.4425, topPct: 0.35, anchor: 'center' }
   const gif = g.gif || { leftPct: 0.4425, topPct: 0.44, maxW: 0.5458, maxH: 0.3899 }
+  // 气泡框整体镜像了，框里的文字/GIF 的水平锚点也要跟着镜像，才能保持居中
+  const flipped = state.flipHorizontal === true
+  const textLeftPct = flipped ? (1 - Number(text.leftPct)) : Number(text.leftPct)
+  const gifLeftPct = flipped ? (1 - Number(gif.leftPct)) : Number(gif.leftPct)
 
   petBox.style.left = L.pad + 'px'
   petBox.style.top = L.pad + 'px'
@@ -250,10 +267,10 @@ function applyLayout() {
   bubbleEl.style.width = L.bubbleW + 'px'
   bubbleEl.style.height = L.bubbleH + 'px'
 
-  textBox.style.left = (text.leftPct * 100) + '%'
+  textBox.style.left = (textLeftPct * 100) + '%'
   textBox.style.top = (text.topPct * 100) + '%'
 
-  gifEl.style.left = (gif.leftPct * 100) + '%'
+  gifEl.style.left = (gifLeftPct * 100) + '%'
   gifEl.style.top = (gif.topPct * 100) + '%'
   gifEl.style.maxWidth = (gif.maxW * L.bubbleW) + 'px'
   gifEl.style.maxHeight = (gif.maxH * L.bubbleW) + 'px'
@@ -274,7 +291,7 @@ function applyLayout() {
 
   const tbRect = textBox.getBoundingClientRect()
   L.textBox = {
-    left: (L.pad + L.bubbleLeft) + (text.leftPct * L.bubbleW) - tbRect.width / 2,
+    left: (L.pad + L.bubbleLeft) + (textLeftPct * L.bubbleW) - tbRect.width / 2,
     top: (L.pad + L.bubbleTop) + (text.topPct * L.bubbleH),
     width: tbRect.width,
     height: tbRect.height,
@@ -295,8 +312,101 @@ function applyLayout() {
   lockBtn.style.height = L.lockButton.height + 'px'
   lockBtn.style.fontSize = Math.round(L.lockButton.width * 0.56) + 'px'
 
-  window.whale.resize({ width: L.windowW, height: L.windowH })
+  window.whale.resize({ width: L.windowW, height: L.windowH, inset: edgeInsets(L) })
   return L
+}
+
+/**
+ * 窗口相对「看得见的内容」还留了多少空白。
+ *
+ * 主进程把窗口吸附到屏幕边缘时，会按这个值让窗口整体探出去同样多像素，
+ * 于是立绘/气泡的可见边缘正好贴住工作区边缘（而不是隔着 16px 透明留白
+ * 停在那里、看起来"拖不过去"）。左右取气泡方框（气泡框比气球大，保守取值），
+ * 上下取立绘方框，因为那两边立绘是最外沿的可见物。
+ */
+function edgeInsets(L) {
+  const boxes = []
+  // 立绘：右下角最外沿的可见物
+  boxes.push({
+    left: L.pad + L.imageLeft,
+    top: L.pad + L.imageTop,
+    right: L.pad + L.imageLeft + L.imageW,
+    bottom: L.pad + L.imageTop + L.imageH,
+  })
+  // 气球：SVG 的方框比真正画出来的气球大得多（框宽 320、气球只占中间一段），
+  // 按真正画出来的形状算，立绘才能贴到边而气球又不会被裁掉。
+  const painted = paintedBubbleRect()
+  boxes.push(painted || {
+    left: L.pad + L.bubbleLeft,
+    top: L.pad + L.bubbleTop,
+    right: L.pad + L.bubbleLeft + L.bubbleW,
+    bottom: L.pad + L.bubbleTop + L.bubbleH,
+  })
+  // 汉堡按钮也占位置，别让它被裁
+  boxes.push({
+    left: L.button.left,
+    top: L.button.top,
+    right: L.button.left + L.button.width,
+    bottom: L.button.top + L.button.height,
+  })
+  const left = Math.min(...boxes.map((b) => b.left))
+  const top = Math.min(...boxes.map((b) => b.top))
+  const right = Math.max(...boxes.map((b) => b.right))
+  const bottom = Math.max(...boxes.map((b) => b.bottom))
+  return {
+    left: Math.max(0, Math.round(left)),
+    top: Math.max(0, Math.round(top)),
+    right: Math.max(0, Math.round(L.windowW - right)),
+    bottom: Math.max(0, Math.round(L.windowH - bottom)),
+  }
+}
+
+/**
+ * 气球真正画出来的那块矩形（窗口坐标系 px）。
+ *
+ * 用 getBBox() 读 SVG 几何（不受 CSS 动画 scale 影响），再按 viewBox 映射到屏幕
+ * 像素；翻转时整个气球是镜像的，所以横向坐标按方框宽度再翻一次。
+ */
+function paintedBubbleRect() {
+  try {
+    const svg = bubbleEl.querySelector('svg')
+    if (!svg) return null
+    const vb = svg.viewBox && svg.viewBox.baseVal
+    const box = svg.getBoundingClientRect()
+    if (!vb || !vb.width || !box.width) return null
+    const scale = box.width / vb.width
+    if (!isFinite(scale) || scale <= 0) return null
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    const shapes = svg.querySelectorAll('path, ellipse')
+    for (let i = 0; i < shapes.length; i++) {
+      let b
+      try { b = shapes[i].getBBox() } catch (err) { continue }
+      if (!b || (!b.width && !b.height)) continue
+      minX = Math.min(minX, b.x)
+      maxX = Math.max(maxX, b.x + b.width)
+      minY = Math.min(minY, b.y)
+      maxY = Math.max(maxY, b.y + b.height)
+    }
+    if (!isFinite(minX)) return null
+    let left = (minX - (vb.x || 0)) * scale
+    let right = (maxX - (vb.x || 0)) * scale
+    if (state.flipHorizontal === true) {
+      const mirroredLeft = box.width - right
+      right = box.width - left
+      left = mirroredLeft
+    }
+    return {
+      left: box.left + left,
+      top: box.top + (minY - (vb.y || 0)) * scale,
+      right: box.left + right,
+      bottom: box.top + (maxY - (vb.y || 0)) * scale,
+    }
+  } catch (err) {
+    return null
+  }
 }
 
 // --- hit testing ------------------------------------------------------------
@@ -1201,6 +1311,7 @@ function buildMenu() {
   flipRow.appendChild(makeCheckbox(state.flipHorizontal, (v) => {
     state.flipHorizontal = v
     petBox.classList.toggle('flip-horizontal', v)
+    applyLayout()
     rebuildHitMask()
     window.whale.setFlip(v).catch(() => {})
   }))

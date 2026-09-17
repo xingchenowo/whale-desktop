@@ -27,7 +27,11 @@ const { readLedger, recordUsage, readTodayUsage } = require('./ledger.cjs')
 const { apiKey, platformToken } = require('./credentials.cjs')
 const { startKeyboardHook, stopKeyboardHook, isKeyboardHookRunning } = require('./keyboard.cjs')
 const { readJsonc, deepMerge, writeJsonAtomic } = require('./lib/jsonc.cjs')
-const { getAutostartState, setAutostartEnabled, syncAutostartTarget } = require('./autostart.cjs')
+const {
+  syncAutostartTargetAsync,
+  getAutostartStateAsync,
+  setAutostartEnabledAsync,
+} = require('./autostart.cjs')
 
 app.setAppUserModelId('H1kaRU.WhaleDesktop')
 
@@ -575,6 +579,25 @@ function getStore() {
   return getStore._s
 }
 
+/**
+ * 开机自启状态缓存。
+ *
+ * 菜单里只读缓存值，绝不在这里同步跑 reg.exe：菜单弹出/关闭的瞬间主进程一卡，
+ * 任务栏就会转圈假死（开机第一次尤其明显，reg.exe 冷启动 + 杀软扫描都很慢）。
+ */
+let autostartEnabledCache = false
+let autostartRefreshToken = 0
+function refreshAutostartState() {
+  const token = ++autostartRefreshToken
+  getAutostartStateAsync()
+    .then((state) => {
+      if (token !== autostartRefreshToken) return
+      autostartEnabledCache = !!state.enabled
+      rebuildTrayMenu()
+    })
+    .catch((err) => paths.log('autostart state query failed:', String((err && err.message) || err)))
+}
+
 /** Compute the initial pet position from config.anchor. */
 function anchorRect(width, height) {
   const cfg = config()
@@ -588,7 +611,17 @@ function anchorRect(width, height) {
   return { x: Math.round(x), y: Math.round(y) }
 }
 
-function resizeWindow(width, height) {
+/**
+ * 渲染端报上来的「窗口留白」——窗口边缘到可见内容（立绘/气泡）之间的像素。
+ * 吸附到屏幕边缘时窗口会探出这么多，让可见部分真正贴边。
+ */
+function contentInset() {
+  const raw = getState().inset || {}
+  const num = (v) => Math.max(0, Math.round(Number(v) || 0))
+  return { left: num(raw.left), top: num(raw.top), right: num(raw.right), bottom: num(raw.bottom) }
+}
+
+function resizeWindow(width, height, inset) {
   if (!win || win.isDestroyed()) return
   const w = Math.max(80, Math.round(width))
   const h = Math.max(80, Math.round(height))
@@ -610,7 +643,14 @@ function resizeWindow(width, height) {
     y = r.y
   }
   win.setBounds({ x: Math.round(x), y: Math.round(y), width: w, height: h })
-  getStore().set('win', { ...state, rect: { x: Math.round(x), y: Math.round(y), w, h } })
+  const patch = { rect: { x: Math.round(x), y: Math.round(y), w, h } }
+  if (inset) patch.inset = contentInsetFrom(inset)
+  getStore().set('win', { ...state, ...patch })
+}
+
+function contentInsetFrom(raw) {
+  const num = (v) => Math.max(0, Math.round(Number(v) || 0))
+  return { left: num(raw && raw.left), top: num(raw && raw.top), right: num(raw && raw.right), bottom: num(raw && raw.bottom) }
 }
 
 function rememberBounds() {
@@ -630,8 +670,10 @@ function dropSnap() {
   const b = win.getBounds()
   const display = screen.getDisplayMatching(b)
   const wa = display.workArea
-  const x = Math.max(wa.x, Math.min(b.x, wa.x + wa.width - b.width))
-  const y = Math.max(wa.y, Math.min(b.y, wa.y + wa.height - b.height))
+  // 允许窗口探出留白，让立绘/气泡的可见边缘贴住工作区边缘
+  const inset = contentInset()
+  const x = Math.max(wa.x - inset.left, Math.min(b.x, wa.x + wa.width - b.width + inset.right))
+  const y = Math.max(wa.y - inset.top, Math.min(b.y, wa.y + wa.height - b.height + inset.bottom))
   if (x !== b.x || y !== b.y) {
     win.setBounds({ x: Math.round(x), y: Math.round(y), width: b.width, height: b.height })
   }
@@ -672,9 +714,10 @@ function resolveInitialBounds(w, h, offset) {
   const probe = { x: Math.round(x), y: Math.round(y), width: w, height: h }
   const display = screen.getDisplayMatching(probe)
   const wa = display.workArea
+  const inset = contentInset()
   return {
-    x: Math.round(Math.max(wa.x, Math.min(probe.x, wa.x + wa.width - w))),
-    y: Math.round(Math.max(wa.y, Math.min(probe.y, wa.y + wa.height - h))),
+    x: Math.round(Math.max(wa.x - inset.left, Math.min(probe.x, wa.x + wa.width - w + inset.right))),
+    y: Math.round(Math.max(wa.y - inset.top, Math.min(probe.y, wa.y + wa.height - h + inset.bottom))),
   }
 }
 
@@ -1084,13 +1127,24 @@ function rebuildTrayMenu() {
     {
       label: '开机自启',
       type: 'checkbox',
-      checked: getAutostartState().enabled,
+      checked: autostartEnabledCache,
       click: (item) => {
-        const result = setAutostartEnabled(item.checked)
-        if (!result.ok) {
-          item.checked = !item.checked
-          dialog.showErrorBox('开机自启设置失败', result.error)
-        }
+        const want = item.checked
+        setAutostartEnabledAsync(want)
+          .then((result) => {
+            if (!result.ok) {
+              item.checked = !want
+              dialog.showErrorBox('开机自启设置失败', result.error)
+            } else {
+              autostartEnabledCache = want
+            }
+            rebuildTrayMenu()
+          })
+          .catch((err) => {
+            item.checked = !want
+            rebuildTrayMenu()
+            dialog.showErrorBox('开机自启设置失败', String((err && err.message) || err))
+          })
       },
     },
     { type: 'separator' },
@@ -1170,7 +1224,7 @@ function setupIpc() {
   })
 
   ipcMain.handle('whale:resize', (_e, size) => {
-    resizeWindow(Number(size && size.width) || 300, Number(size && size.height) || 300)
+    resizeWindow(Number(size && size.width) || 300, Number(size && size.height) || 300, size && size.inset)
     return true
   })
 
@@ -1216,7 +1270,8 @@ function setupIpc() {
     const b = win.getBounds()
     const display = screen.getDisplayMatching(b)
     const wa = display.workArea
-    const gap = 12
+    const inset = contentInset()
+    const gap = 0
     const dLeft = b.x - wa.x
     const dRight = wa.x + wa.width - (b.x + b.width)
     const dTop = b.y - wa.y
@@ -1225,10 +1280,11 @@ function setupIpc() {
     let y = b.y
     const hAnchor = dLeft <= dRight ? 'left' : 'right'
     const vAnchor = dTop <= dBottom ? 'top' : 'bottom'
-    if (Math.min(dLeft, dRight) < 140) x = hAnchor === 'left' ? wa.x + gap : wa.x + wa.width - b.width - gap
-    if (Math.min(dTop, dBottom) < 140) y = vAnchor === 'top' ? wa.y + gap : wa.y + wa.height - b.height - gap
-    x = Math.max(wa.x, Math.min(x, wa.x + wa.width - b.width))
-    y = Math.max(wa.y, Math.min(y, wa.y + wa.height - b.height))
+    // 贴边时用 gap=0 并且允许窗口按留白探出，否则立绘永远差十几像素贴不到边
+    if (Math.min(dLeft, dRight) < 140) x = hAnchor === 'left' ? wa.x + gap - inset.left : wa.x + wa.width - b.width - gap + inset.right
+    if (Math.min(dTop, dBottom) < 140) y = vAnchor === 'top' ? wa.y + gap - inset.top : wa.y + wa.height - b.height - gap + inset.bottom
+    x = Math.max(wa.x - inset.left, Math.min(x, wa.x + wa.width - b.width + inset.right))
+    y = Math.max(wa.y - inset.top, Math.min(y, wa.y + wa.height - b.height + inset.bottom))
     win.setBounds({ x: Math.round(x), y: Math.round(y), width: b.width, height: b.height })
     updateAnchors(hAnchor, vAnchor)
     return { x: Math.round(x), y: Math.round(y), hAnchor, vAnchor }
@@ -1316,8 +1372,13 @@ if (!singleInstance && !VERIFY_SHOT) {
   app.whenReady().then(() => {
     paths.ensureLayout()
     if (!SECOND_PET) {
-      const autostartSync = syncAutostartTarget()
-      if (!autostartSync.ok && autostartSync.enabled) paths.log('autostart sync failed:', autostartSync.error)
+      // 异步同步注册表：开机时 reg.exe 很慢，同步跑会把主进程冻住（托盘菜单转圈）
+      syncAutostartTargetAsync()
+        .then((r) => {
+          if (!r.ok && r.enabled) paths.log('autostart sync failed:', r.error)
+          refreshAutostartState()
+        })
+        .catch((err) => paths.log('autostart sync failed:', String((err && err.message) || err)))
     }
     ensureUserFiles()
     reloadConfig()
@@ -1329,14 +1390,26 @@ if (!singleInstance && !VERIFY_SHOT) {
     createWindow()
     startConfigWatcher()
     if (!SECOND_PET) {
-      tray = new Tray(trayIcon())
-      tray.setToolTip('WhaleDesketop')
-      tray.on('click', () => toggleWindow())
-      rebuildTrayMenu()
-      applyDisplayMode()
+      const startTray = () => {
+        if (tray) return
+        tray = new Tray(trayIcon())
+        tray.setToolTip('WhaleDesketop')
+        tray.on('click', () => toggleWindow())
+        rebuildTrayMenu()
+      }
+      // 登录自启时通知区域还在初始化，reg.exe 又慢；稍后再建托盘图标，
+      // 免得开机第一次右键托盘就卡出转圈光标。
+      if (process.argv.includes('--autostart')) {
+        setTimeout(startTray, 1500)
+        setTimeout(refreshAutostartState, 2500)
+      } else {
+        startTray()
+        refreshAutostartState()
+      }
       scheduleRefresh()
-      // Warm the balance cache shortly after boot.
+      // 键盘钩子 + 余额预热也挪到启动高峰之后，别和窗口首帧抢主线程。
       setTimeout(() => {
+        applyDisplayMode()
         if (wantsBalanceDisplay()) {
           refreshBalance(false).then((payload) => sendToRenderer('whale:balance', payload)).catch(() => {})
         }
